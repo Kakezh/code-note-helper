@@ -1,4 +1,4 @@
-﻿/* AI 对话时间轴 样式 - ChatGPT（版本：1.0.80） */
+﻿/* AI 对话时间轴 样式 - ChatGPT（版本：1.1.3） */
 
 :root {
     --tl-dot-color: #D1D5DB;
@@ -217,6 +217,15 @@ body[style*="background: rgb(32"],
 
 .ai-timeline-tooltip-copy:hover {
     background: rgba(255, 255, 255, 0.25);
+}
+
+.ai-timeline-tooltip-copy:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.ai-timeline-tooltip-copy:disabled:hover {
+    background: rgba(255, 255, 255, 0.15);
 }
 
 .ai-timeline-tooltip-copy:active {

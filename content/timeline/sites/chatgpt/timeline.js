@@ -1,6 +1,6 @@
 ﻿/**
  * AI 对话时间轴 内容脚本 - ChatGPT
- * 版本：1.1.2
+ * 版本：1.1.3
  * 基线：7ef0d64（v1.0.18）+ 深色模式增强
  */
 
@@ -11,7 +11,7 @@
     if (window.__AI_TIMELINE_INJECTED__) return;
     window.__AI_TIMELINE_INJECTED__ = true;
 
-    console.log('[AI Timeline] Content script loaded (v1.1.2)');
+    console.log('[AI Timeline] Content script loaded (v1.1.3)');
 
     // === 配置 ===
     const CONFIG = {
@@ -22,6 +22,7 @@
         INIT_DELAY: 1000,
         SCROLL_BEHAVIOR: 'smooth',
         STORAGE_PREFIX: 'ai_timeline_marks_',
+        CHATGPT_PREVIEW_CACHE_PREFIX: 'ai_timeline_chatgpt_preview_cache_',
         PREVIEW_TEXT_LENGTH: 260,
         LONG_CONVERSATION_THRESHOLD: 8,
         TRACK_PADDING: 16,
@@ -131,6 +132,8 @@
         return match ? Number(match[1]) : -1;
     }
 
+    const CHATGPT_UNLOADED_PLACEHOLDER = '这一轮内容尚未加载，点击后可查看';
+
     async function copyToClipboard(text, btn, resetText = '复制提问') {
         try {
             await navigator.clipboard.writeText(text);
@@ -174,7 +177,18 @@
             this.currentHoverNode = null;
             this.isMouseOverTooltip = false;
             this.isMouseOverHitZone = false;
-            this.pendingChatgptHydrations = new Set();
+            this.chatgptHydrationObserver = null;
+            this.chatgptHydrationTargetId = null;
+            this.chatgptPreviewCache = this.loadChatgptPreviewCache();
+            this.chatgptConversationPreviewPromise = null;
+            this.chatgptConversationPreviewLoaded = false;
+            this.chatgptConversationPreviewAutoAttempted = false;
+            this.chatgptPageDataPreviewAttempted = false;
+            this.chatgptHoverHydrationObserver = null;
+            this.chatgptHoverHydrationTargetId = null;
+            this.chatgptHoverHydrationRAF = null;
+            this.chatgptHoverHydrationRestore = null;
+            this.isRestoringChatgptHoverScroll = false;
             this.mutationObserver = null;
             this.scrollSyncRAF = null;
             this.pollIntervalId = null;
@@ -388,6 +402,8 @@
         }
 
         destroy() {
+            this.clearChatgptHoverHydration();
+            this.clearChatgptHydrationObserver();
             // 清理 UI
             if (this.ui.bar) this.ui.bar.remove();
             if (this.ui.tooltip) this.ui.tooltip.remove();
@@ -475,6 +491,331 @@
             });
         }
 
+        getChatgptPreviewCacheKey() {
+            const convId = this.adapter.getConversationId?.();
+            return convId ? `${CONFIG.CHATGPT_PREVIEW_CACHE_PREFIX}${convId}` : null;
+        }
+
+        loadChatgptPreviewCache() {
+            const key = this.getChatgptPreviewCacheKey();
+            if (!key) return {};
+            try {
+                const raw = localStorage.getItem(key);
+                const parsed = raw ? JSON.parse(raw) : {};
+                return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+            } catch (err) {
+                console.warn('[AI Timeline] 读取 ChatGPT 时间轴预览缓存失败:', err);
+                return {};
+            }
+        }
+
+        saveChatgptPreviewCache() {
+            const key = this.getChatgptPreviewCacheKey();
+            if (!key) return;
+            try {
+                localStorage.setItem(key, JSON.stringify(this.chatgptPreviewCache || {}));
+            } catch (err) {
+                console.warn('[AI Timeline] 保存 ChatGPT 时间轴预览缓存失败:', err);
+            }
+        }
+
+        getCachedChatgptText(id) {
+            return normalizeText(this.chatgptPreviewCache?.[id]);
+        }
+
+        cacheChatgptText(id, text) {
+            const normalizedText = normalizeText(text);
+            if (!id || !normalizedText || normalizedText === CHATGPT_UNLOADED_PLACEHOLDER) return;
+            if (this.chatgptPreviewCache[id] === normalizedText) return;
+            this.chatgptPreviewCache[id] = normalizedText;
+            this.saveChatgptPreviewCache();
+        }
+
+        getChatgptConversationApiUrl() {
+            const convId = this.adapter.getConversationId?.();
+            if (!convId || location.pathname.includes('/share/')) return '';
+            // 自定义 GPT 的 /g/.../c/... 页面在真实环境中可能对通用 conversation 接口返回 404。
+            // 这里不再主动请求该接口，避免扩展管理页出现误报；这类页面优先依赖页面内数据、DOM 挂载和本地缓存。
+            if (location.pathname.startsWith('/g/')) return '';
+            return `/backend-api/conversation/${encodeURIComponent(convId)}`;
+        }
+
+        extractChatgptContentText(content) {
+            if (!content) return '';
+            if (typeof content === 'string') return normalizeText(content);
+            if (Array.isArray(content.parts)) {
+                return normalizeText(content.parts.map((part) => {
+                    if (typeof part === 'string') return part;
+                    if (!part || typeof part !== 'object') return '';
+                    if (typeof part.text === 'string') return part.text;
+                    if (typeof part.content === 'string') return part.content;
+                    if (typeof part.name === 'string') return part.name;
+                    return '';
+                }).filter(Boolean).join(' '));
+            }
+            if (typeof content.text === 'string') return normalizeText(content.text);
+            if (typeof content.content === 'string') return normalizeText(content.content);
+            return '';
+        }
+
+        extractChatgptUserTextsFromConversationPayload(payload) {
+            const mapping = payload?.mapping;
+            if (!mapping || typeof mapping !== 'object') return [];
+
+            let messages = [];
+            const visited = new Set();
+            let currentNodeId = payload.current_node;
+            while (currentNodeId && mapping[currentNodeId] && !visited.has(currentNodeId)) {
+                visited.add(currentNodeId);
+                const node = mapping[currentNodeId];
+                if (node?.message) messages.push(node.message);
+                currentNodeId = node?.parent;
+            }
+
+            if (messages.length) {
+                messages = messages.reverse();
+            } else {
+                messages = Object.values(mapping)
+                    .map((node) => node?.message)
+                    .filter(Boolean)
+                    .sort((left, right) => (left.create_time || 0) - (right.create_time || 0));
+            }
+
+            return messages
+                .filter((message) => message?.author?.role === 'user')
+                .map((message) => this.extractChatgptContentText(message.content))
+                .filter(Boolean);
+        }
+
+        collectChatgptConversationPayloadsFromObject(root) {
+            const found = [];
+            if (!root || typeof root !== 'object') return found;
+
+            const seen = new WeakSet();
+            const stack = [root];
+            while (stack.length) {
+                const item = stack.pop();
+                if (!item || typeof item !== 'object' || seen.has(item)) continue;
+                seen.add(item);
+
+                if (item.mapping && typeof item.mapping === 'object') {
+                    found.push(item);
+                    continue;
+                }
+
+                const values = Array.isArray(item) ? item : Object.values(item);
+                values.forEach((value) => {
+                    if (value && typeof value === 'object') stack.push(value);
+                });
+            }
+            return found;
+        }
+
+        tryLoadChatgptPreviewFromPageData() {
+            if (this.adapter.name !== 'ChatGPT') return false;
+            if (this.chatgptConversationPreviewLoaded || this.chatgptPageDataPreviewAttempted) return false;
+            this.chatgptPageDataPreviewAttempted = true;
+
+            const roots = [];
+            if (window.__NEXT_DATA__) roots.push(window.__NEXT_DATA__);
+            if (window.__remixContext) roots.push(window.__remixContext);
+            if (window.__reactRouterContext) roots.push(window.__reactRouterContext);
+
+            Array.from(document.scripts || []).forEach((script) => {
+                const raw = script.textContent || '';
+                if (!raw.includes('mapping') || !raw.includes('author')) return;
+                try {
+                    roots.push(JSON.parse(raw));
+                } catch (_) {
+                    // 不是纯 JSON 的脚本文本直接跳过；这里不输出日志，避免干扰普通用户。
+                }
+            });
+
+            for (const root of roots) {
+                const payloads = this.collectChatgptConversationPayloadsFromObject(root);
+                for (const payload of payloads) {
+                    const userTexts = this.extractChatgptUserTextsFromConversationPayload(payload);
+                    if (this.applyChatgptConversationPreviewTexts(userTexts)) return true;
+                }
+            }
+            return false;
+        }
+
+        applyChatgptConversationPreviewTexts(userTexts) {
+            if (!Array.isArray(userTexts) || userTexts.length === 0) return false;
+
+            const idBySequence = new Map();
+            this.sortedMessages.forEach((msg) => {
+                if (Number.isFinite(msg.sequence)) idBySequence.set(msg.sequence, msg.stableId);
+            });
+
+            let changed = false;
+            userTexts.forEach((text, index) => {
+                const normalizedText = normalizeText(text);
+                if (!normalizedText) return;
+
+                const sequence = index * 2 + 1;
+                const knownId = idBySequence.get(sequence);
+                const fallbackId = `turn-conversation-turn-${sequence}`;
+                const targetId = knownId || fallbackId;
+
+                if (this.messageMap.has(targetId)) {
+                    changed = this.updateTimelineItemText(targetId, normalizedText) || changed;
+                } else {
+                    this.cacheChatgptText(targetId, normalizedText);
+                    changed = true;
+                }
+            });
+
+            if (changed) {
+                this.chatgptConversationPreviewLoaded = true;
+            }
+            return changed;
+        }
+
+        requestChatgptConversationPreviewHydration(reason = 'hover') {
+            if (this.adapter.name !== 'ChatGPT') return Promise.resolve(false);
+            if (this.chatgptConversationPreviewLoaded || this.chatgptConversationPreviewUnavailable) return Promise.resolve(false);
+            if (this.chatgptConversationPreviewPromise) return this.chatgptConversationPreviewPromise;
+            if (this.tryLoadChatgptPreviewFromPageData()) return Promise.resolve(true);
+            if (reason === 'auto' && this.chatgptConversationPreviewAutoAttempted) return Promise.resolve(false);
+
+            const url = this.getChatgptConversationApiUrl();
+            if (!url) return Promise.resolve(false);
+
+            if (reason === 'auto') {
+                // 自动预热只在当前页面生命周期内主动发起一次，避免 DOM 重建时重复请求；用户再次 hover 时仍可重试。
+                this.chatgptConversationPreviewAutoAttempted = true;
+            }
+
+            this.chatgptConversationPreviewPromise = fetch(url, {
+                method: 'GET',
+                credentials: 'include',
+                headers: { accept: 'application/json' }
+            })
+                .then((response) => {
+                    if (!response.ok) {
+                        if (response.status === 401 || response.status === 403 || response.status === 404) {
+                            this.chatgptConversationPreviewUnavailable = true;
+                        }
+                        return null;
+                    }
+                    return response.json();
+                })
+                .then((payload) => {
+                    if (!payload) return false;
+                    const userTexts = this.extractChatgptUserTextsFromConversationPayload(payload);
+                    const changed = this.applyChatgptConversationPreviewTexts(userTexts);
+                    if (changed && this.currentHoverNode) {
+                        this.showTooltip(this.currentHoverNode);
+                    }
+                    return changed;
+                })
+                .catch(() => false)
+                .finally(() => {
+                    this.chatgptConversationPreviewPromise = null;
+                });
+
+            return this.chatgptConversationPreviewPromise;
+        }
+
+        maybeWarmChatgptConversationPreview() {
+            if (this.adapter.name !== 'ChatGPT') return;
+            if (this.chatgptConversationPreviewLoaded || this.chatgptConversationPreviewPromise) return;
+            if (!this.sortedMessages.some((msg) => msg.needsHydration)) return;
+            this.requestChatgptConversationPreviewHydration('auto');
+        }
+
+        tryUpdateChatgptTurnFromDom(id) {
+            const msg = this.messageMap.get(id);
+            if (!msg?.sectionTestId) return false;
+            const section = this.findChatgptSection(msg.sectionTestId);
+            const text = this.readChatgptUserTextFromSection(section);
+            return this.updateTimelineItemText(id, text);
+        }
+
+        restoreChatgptHoverScroll() {
+            const restoreState = this.chatgptHoverHydrationRestore;
+            this.chatgptHoverHydrationRestore = null;
+            if (!restoreState || !this.scrollContainer) return;
+
+            this.isRestoringChatgptHoverScroll = true;
+            this.scrollContainer.scrollTop = restoreState.scrollTop;
+            if (restoreState.activeNodeId !== this.activeNodeId) {
+                this.activeNodeId = restoreState.activeNodeId;
+                this.refreshActiveVisual();
+            }
+            requestAnimationFrame(() => {
+                this.isRestoringChatgptHoverScroll = false;
+            });
+        }
+
+        clearChatgptHoverHydration() {
+            if (this.chatgptHoverHydrationRAF) {
+                cancelAnimationFrame(this.chatgptHoverHydrationRAF);
+                this.chatgptHoverHydrationRAF = null;
+            }
+            if (this.chatgptHoverHydrationObserver) {
+                this.chatgptHoverHydrationObserver.disconnect();
+            }
+            this.restoreChatgptHoverScroll();
+            this.chatgptHoverHydrationObserver = null;
+            this.chatgptHoverHydrationTargetId = null;
+        }
+
+        startChatgptHoverHydration(id) {
+            if (this.adapter.name !== 'ChatGPT') return;
+            this.clearChatgptHoverHydration();
+            if (!id || this.tryUpdateChatgptTurnFromDom(id)) return;
+
+            const msg = this.messageMap.get(id);
+            if (!this.isChatgptPlaceholderMessage(msg) || !msg.sectionTestId || !this.scrollContainer) return;
+
+            this.requestChatgptConversationPreviewHydration('hover');
+
+            const section = this.findChatgptSection(msg.sectionTestId);
+            const targetAnchor = this.findChatgptTurnAnchor(section) || section;
+            if (!section || !targetAnchor?.isConnected) return;
+
+            const observeRoot = section.parentElement || this.container;
+            if (observeRoot) {
+                this.chatgptHoverHydrationObserver = new MutationObserver(() => {
+                    if (this.tryUpdateChatgptTurnFromDom(id)) {
+                        this.clearChatgptHoverHydration();
+                    }
+                });
+                this.chatgptHoverHydrationObserver.observe(observeRoot, {
+                    childList: true,
+                    subtree: true,
+                    characterData: true
+                });
+            }
+
+            const currentScrollTop = this.scrollContainer.scrollTop;
+            const targetTop = this.getScrollTopForTarget(targetAnchor);
+            this.chatgptHoverHydrationTargetId = id;
+            this.chatgptHoverHydrationRestore = {
+                scrollTop: currentScrollTop,
+                activeNodeId: this.activeNodeId
+            };
+
+            if (Math.abs(currentScrollTop - targetTop) <= 2) {
+                this.chatgptHoverHydrationRestore = null;
+                return;
+            }
+
+            // hover 预加载只短暂触发 ChatGPT 自身的懒加载判断，下一帧立即恢复原位置，避免用户看到页面跳动。
+            this.scrollContainer.scrollTop = targetTop;
+            this.chatgptHoverHydrationRAF = requestAnimationFrame(() => {
+                this.chatgptHoverHydrationRAF = null;
+                if (this.tryUpdateChatgptTurnFromDom(id)) {
+                    this.clearChatgptHoverHydration();
+                    return;
+                }
+                this.restoreChatgptHoverScroll();
+            });
+        }
+
         shouldInferChatgptUserTurn(section, turnNumber, hasMountedConversation) {
             if (!hasMountedConversation) return false;
             if (!Number.isFinite(turnNumber) || turnNumber <= 0) return false;
@@ -492,33 +833,49 @@
 
         findChatgptTurnAnchor(section) {
             if (!section) return null;
-            return section.closest('[data-turn-id-container]')
-                || section.closest(this.adapter.turnSelector)
-                || section;
+
+            const turnSection = section.matches?.(this.adapter.turnSelector)
+                ? section
+                : section.closest?.(this.adapter.turnSelector);
+            if (turnSection) return turnSection;
+
+            const turnContainer = section.closest?.('[data-turn-id-container]');
+            if (turnContainer && turnContainer.querySelectorAll(this.adapter.turnSelector).length === 1) {
+                return turnContainer;
+            }
+
+            return section;
         }
 
         buildChatgptUserTimelineItem(section, index, userEl, userText, turnNumber, sectionTestId, inferred) {
             const fallbackTurnNumber = turnNumber > 0 ? turnNumber : (index + 1);
-            const placeholderText = `第 ${fallbackTurnNumber} 轮提问`;
-            const fullText = userText || normalizeText(section.textContent) || placeholderText;
+            const placeholderText = CHATGPT_UNLOADED_PLACEHOLDER;
+            const stableId = sectionTestId ? `turn-${sectionTestId}` : `turn-index-${index}`;
+            const cachedText = inferred ? this.getCachedChatgptText(stableId) : '';
+            const fullText = userText || normalizeText(section.textContent) || cachedText || placeholderText;
+            const needsHydration = Boolean(inferred) && !cachedText && fullText === placeholderText;
             const anchorEl = this.findChatgptTurnAnchor(section) || userEl || section;
             return {
-                stableId: sectionTestId ? `turn-${sectionTestId}` : `turn-index-${index}`,
+                stableId,
                 el: anchorEl,
                 sectionTestId,
                 text: fullText,
                 fullText,
                 label: '提问',
-                copyLabel: '复制提问',
+                copyLabel: needsHydration ? '内容未加载' : '复制提问',
                 sequence: fallbackTurnNumber,
-                inferred: Boolean(inferred),
-                needsHydration: Boolean(inferred) && fullText === placeholderText
+                inferred: needsHydration,
+                needsHydration
             };
         }
 
         isChatgptPlaceholderMessage(msg) {
-            if (!msg || !msg.needsHydration) return false;
-            return normalizeText(msg.fullText || msg.text) === `第 ${msg.sequence} 轮提问`;
+            return Boolean(msg?.needsHydration);
+        }
+
+        getTimelineNodeTitle(msg) {
+            const text = normalizeText(msg?.fullText || msg?.text);
+            return text || CHATGPT_UNLOADED_PLACEHOLDER;
         }
 
         findChatgptSection(sectionTestId) {
@@ -542,11 +899,22 @@
             msg.fullText = normalizedText;
             msg.needsHydration = false;
             msg.inferred = false;
+            msg.copyLabel = '复制提问';
 
             const rendered = this.renderedNodes.get(id);
             if (rendered) {
                 rendered.text = normalizedText.substring(0, CONFIG.PREVIEW_TEXT_LENGTH)
                     + (normalizedText.length > CONFIG.PREVIEW_TEXT_LENGTH ? '...' : '');
+                rendered.fullText = normalizedText;
+                rendered.copyLabel = '复制提问';
+                rendered.node.removeAttribute('title');
+                rendered.node.setAttribute('aria-label', normalizedText);
+            }
+
+            this.cacheChatgptText(id, normalizedText);
+
+            if (this.chatgptHydrationTargetId === id) {
+                this.clearChatgptHydrationObserver();
             }
 
             if (this.currentHoverNode && this.currentHoverNode.dataset.id === id) {
@@ -562,39 +930,48 @@
             return Math.max(0, this.scrollContainer.scrollTop + targetRect.top - containerRect.top - 16);
         }
 
-        scheduleChatgptHydration(id, options = {}) {
+        clearChatgptHydrationObserver() {
+            if (this.chatgptHydrationObserver) {
+                this.chatgptHydrationObserver.disconnect();
+            }
+            this.chatgptHydrationObserver = null;
+            this.chatgptHydrationTargetId = null;
+        }
+
+        observeChatgptTurnHydration(id) {
             if (this.adapter.name !== 'ChatGPT') return;
-            if (!id || this.pendingChatgptHydrations.has(id)) return;
+            this.clearChatgptHydrationObserver();
+            if (!id) return;
 
             const msg = this.messageMap.get(id);
+            if (!msg || !msg.sectionTestId) return;
+
+            const updateFromCurrentDom = () => {
+                const hydratedMsg = this.messageMap.get(id);
+                if (!hydratedMsg) {
+                    this.clearChatgptHydrationObserver();
+                    return true;
+                }
+                const hydratedSection = this.findChatgptSection(hydratedMsg.sectionTestId);
+                const hydratedText = this.readChatgptUserTextFromSection(hydratedSection);
+                return this.updateTimelineItemText(id, hydratedText);
+            };
+
+            if (updateFromCurrentDom()) return;
             if (!this.isChatgptPlaceholderMessage(msg)) return;
 
             const section = this.findChatgptSection(msg.sectionTestId);
-            if (!section || !this.scrollContainer) return;
+            const observeRoot = section?.parentElement || this.container;
+            if (!observeRoot) return;
 
-            const directText = this.readChatgptUserTextFromSection(section);
-            if (this.updateTimelineItemText(id, directText)) {
-                return;
-            }
-
-            this.pendingChatgptHydrations.add(id);
-            const restoreScrollTop = Number.isFinite(options.restoreScrollTop) ? options.restoreScrollTop : null;
-            const targetAnchor = this.findChatgptTurnAnchor(section) || section;
-            const targetTop = this.getScrollTopForTarget(targetAnchor);
-            if (restoreScrollTop === null || Math.abs(this.scrollContainer.scrollTop - targetTop) > 2) {
-                this.scrollContainer.scrollTop = targetTop;
-            }
-
-            requestAnimationFrame(() => {
-                requestAnimationFrame(() => {
-                    const hydratedSection = this.findChatgptSection(msg.sectionTestId);
-                    const hydratedText = this.readChatgptUserTextFromSection(hydratedSection);
-                    if (restoreScrollTop !== null && this.scrollContainer) {
-                        this.scrollContainer.scrollTop = restoreScrollTop;
-                    }
-                    this.updateTimelineItemText(id, hydratedText);
-                    this.pendingChatgptHydrations.delete(id);
-                });
+            this.chatgptHydrationTargetId = id;
+            this.chatgptHydrationObserver = new MutationObserver(() => {
+                updateFromCurrentDom();
+            });
+            this.chatgptHydrationObserver.observe(observeRoot, {
+                childList: true,
+                subtree: true,
+                characterData: true
             });
         }
 
@@ -656,8 +1033,9 @@
         fullRebuild() {
             if (!this.container) return;
 
+            const hoverNodeId = this.currentHoverNode?.dataset?.id || null;
             this.clearAllTimers();
-            this.hideTooltip();
+            if (!hoverNodeId) this.hideTooltip();
 
             const timelineItems = this.collectTimelineItems();
             if (timelineItems.length === 0) return;
@@ -670,14 +1048,24 @@
                 const rect = item.el.getBoundingClientRect();
                 const absTop = scrollTop + rect.top - containerRect.top;
                 const existing = this.messageMap.get(item.stableId);
+                const existingText = existing && !existing.needsHydration
+                    ? normalizeText(existing.fullText || existing.text)
+                    : '';
+                const keepExistingText = Boolean(item.needsHydration && existingText);
+                const nextNeedsHydration = keepExistingText ? false : Boolean(item.needsHydration);
                 newMessageMap.set(item.stableId, {
                     ...item,
                     absTop,
-                    text: item.text || existing?.text || '',
-                    fullText: item.fullText || existing?.fullText || item.text || '',
+                    text: keepExistingText ? existingText : (item.text || existing?.text || ''),
+                    fullText: keepExistingText ? existingText : (item.fullText || existing?.fullText || item.text || ''),
                     label: item.label || existing?.label || '提问',
-                    copyLabel: item.copyLabel || existing?.copyLabel || '复制内容'
+                    copyLabel: nextNeedsHydration ? (item.copyLabel || '内容未加载') : (item.copyLabel || existing?.copyLabel || '复制内容'),
+                    inferred: keepExistingText ? false : Boolean(item.inferred),
+                    needsHydration: nextNeedsHydration
                 });
+                if (!nextNeedsHydration) {
+                    this.cacheChatgptText(item.stableId, keepExistingText || item.fullText || item.text);
+                }
             });
 
             this.messageMap = newMessageMap;
@@ -689,12 +1077,25 @@
                 return a.absTop - b.absTop;
             });
             this.sortedMessages.forEach((msg, i) => msg.index = i);
+            const hydrationMsg = this.chatgptHydrationTargetId ? this.messageMap.get(this.chatgptHydrationTargetId) : null;
+            if (this.chatgptHydrationTargetId && (!hydrationMsg || !hydrationMsg.needsHydration)) {
+                this.clearChatgptHydrationObserver();
+            }
+            const hoverHydrationMsg = this.chatgptHoverHydrationTargetId ? this.messageMap.get(this.chatgptHoverHydrationTargetId) : null;
+            if (this.chatgptHoverHydrationTargetId && (!hoverHydrationMsg || !hoverHydrationMsg.needsHydration)) {
+                this.clearChatgptHoverHydration();
+            }
+            this.maybeWarmChatgptConversationPreview();
 
             this.isCompactMode = this.sortedMessages.length > CONFIG.LONG_CONVERSATION_THRESHOLD;
             this.ui.trackContent.classList.toggle('compact', this.isCompactMode);
             this.lastScrollHeight = this.scrollContainer.scrollHeight;
 
             this.renderWindow();
+            if (hoverNodeId && this.renderedNodes.has(hoverNodeId)) {
+                this.currentHoverNode = this.renderedNodes.get(hoverNodeId).node;
+                this.showTooltip(this.currentHoverNode);
+            }
             requestAnimationFrame(() => this.updateActiveFromScroll());
         }
 
@@ -725,23 +1126,26 @@
         renderWindow() {
             if (this.sortedMessages.length === 0 || !this.ui.trackContent) return;
 
-            let targetCenterIndex = 0;
-            if (this.activeNodeId && this.messageMap.has(this.activeNodeId)) {
-                targetCenterIndex = this.messageMap.get(this.activeNodeId).index ?? 0;
-            } else {
-                const scrollTop = this.scrollContainer.scrollTop;
-                const scrollHeight = this.scrollContainer.scrollHeight;
-                const ratio = scrollHeight > 0 ? Math.min(1, Math.max(0, scrollTop / scrollHeight)) : 0;
-                targetCenterIndex = Math.floor(ratio * this.sortedMessages.length);
-            }
+            const trackHeight = this.ui.track.clientHeight || 500;
+            const padding = CONFIG.TRACK_PADDING;
+            const naturalGap = this.sortedMessages.length > 0
+                ? (trackHeight - 2 * padding) / (this.sortedMessages.length + 1)
+                : CONFIG.MIN_GAP;
+            const gap = Math.max(CONFIG.MIN_GAP, naturalGap);
+            const contentHeight = Math.max(trackHeight, padding * 2 + gap * (this.sortedMessages.length + 1));
 
-            const halfWindow = CONFIG.VIRTUAL_WINDOW_SIZE;
-            let startIndex = Math.max(0, targetCenterIndex - halfWindow);
-            let endIndex = Math.min(this.sortedMessages.length - 1, targetCenterIndex + halfWindow);
+            this.windowState = {
+                startIndex: 0,
+                endIndex: this.sortedMessages.length - 1,
+                centerIndex: this.activeNodeId && this.messageMap.has(this.activeNodeId)
+                    ? this.messageMap.get(this.activeNodeId).index ?? 0
+                    : 0
+            };
 
-            this.windowState = { startIndex, endIndex, centerIndex: targetCenterIndex };
+            this.ui.trackContent.style.minHeight = `${contentHeight}px`;
+            this.ui.trackContent.querySelectorAll('.ai-timeline-indicator').forEach(el => el.remove());
 
-            const renderList = this.sortedMessages.slice(startIndex, endIndex + 1);
+            const renderList = this.sortedMessages;
             const newIds = new Set(renderList.map(m => m.stableId));
 
             const toRemove = [];
@@ -750,42 +1154,59 @@
             });
             toRemove.forEach(id => this.renderedNodes.delete(id));
 
-            this.ui.trackContent.querySelectorAll('.ai-timeline-indicator').forEach(el => el.remove());
-
-            const trackHeight = this.ui.track.clientHeight || 500;
-            const padding = CONFIG.TRACK_PADDING;
-            const usableHeight = trackHeight - 2 * padding;
-
-            const hasTopMore = startIndex > 0;
-            const hasBottomMore = endIndex < this.sortedMessages.length - 1;
-            const indicatorCount = (hasTopMore ? 1 : 0) + (hasBottomMore ? 1 : 0);
-            const gap = usableHeight / (renderList.length + indicatorCount + 1);
-
-            let currentTop = padding;
-            if (hasTopMore) { this.createIndicator(currentTop, 'up'); currentTop += gap; }
-
-            renderList.forEach(msg => {
+            renderList.forEach((msg, index) => {
                 if (!msg.text) msg.text = this.adapter.extractUserText(msg.el);
+                const currentTop = padding + gap * (index + 1);
 
                 if (this.renderedNodes.has(msg.stableId)) {
-                    this.renderedNodes.get(msg.stableId).node.style.top = `${currentTop}px`;
+                    const rendered = this.renderedNodes.get(msg.stableId);
+                    rendered.node.style.top = `${currentTop}px`;
+                    this.applyTimelineNodeHitSize(rendered.node, gap);
+                    rendered.text = (msg.text || '').substring(0, CONFIG.PREVIEW_TEXT_LENGTH) + ((msg.text || '').length > CONFIG.PREVIEW_TEXT_LENGTH ? '...' : '');
+                    rendered.fullText = msg.fullText || msg.text || '';
+                    rendered.label = msg.label || '提问';
+                    rendered.copyLabel = msg.copyLabel || '复制内容';
+                    rendered.node.removeAttribute('title');
+                    rendered.node.setAttribute('aria-label', this.getTimelineNodeTitle(msg));
                 } else {
                     const node = this.createNode(msg, currentTop);
+                    this.applyTimelineNodeHitSize(node, gap);
                     this.ui.trackContent.appendChild(node);
                     this.renderedNodes.set(msg.stableId, {
                         node,
                         text: (msg.text || '').substring(0, CONFIG.PREVIEW_TEXT_LENGTH) + ((msg.text || '').length > CONFIG.PREVIEW_TEXT_LENGTH ? '...' : ''),
+                        fullText: msg.fullText || msg.text || '',
                         label: msg.label || '提问',
                         copyLabel: msg.copyLabel || '复制内容'
                     });
                 }
-                currentTop += gap;
             });
 
-            if (hasBottomMore) this.createIndicator(currentTop, 'down');
-
             this.refreshActiveVisual();
-            this.ui.track.scrollTop = 0;
+        }
+
+        applyTimelineNodeHitSize(node, gap) {
+            if (!node) return;
+            // 长对话中节点间距可能小于原始 30px 命中区。这里用既有 MIN_GAP 与紧凑点尺寸收窄命中区，
+            // 避免相邻按钮互相覆盖，导致 hover 没反应或气泡闪一下就被其他节点抢走。
+            const compactDotSize = 10;
+            const hitSize = Math.max(compactDotSize, Math.min(30, Math.floor(gap)));
+            node.style.width = `${hitSize}px`;
+            node.style.height = `${hitSize}px`;
+        }
+
+        syncTimelineTrackScrollToActive() {
+            if (!this.ui.track || !this.activeNodeId || this.currentHoverNode || this.isMouseOverTooltip || this.isMouseOverHitZone) return;
+            const rendered = this.renderedNodes.get(this.activeNodeId);
+            if (!rendered?.node) return;
+
+            const nodeTop = Number.parseFloat(rendered.node.style.top || '0');
+            if (!Number.isFinite(nodeTop)) return;
+
+            const trackHeight = this.ui.track.clientHeight || 0;
+            const maxScrollTop = Math.max(0, this.ui.trackContent.scrollHeight - trackHeight);
+            const nextScrollTop = Math.max(0, Math.min(maxScrollTop, nodeTop - trackHeight / 2));
+            this.ui.track.scrollTop = nextScrollTop;
         }
 
         createNode(msg, top) {
@@ -793,6 +1214,8 @@
             node.className = 'ai-timeline-node';
             node.dataset.id = msg.stableId;
             node.style.top = `${top}px`;
+            node.removeAttribute('title');
+            node.setAttribute('aria-label', this.getTimelineNodeTitle(msg));
 
             if (this.markedIds.has(msg.stableId)) node.classList.add('marked');
             if (msg.stableId === this.activeNodeId) node.classList.add('active');
@@ -804,9 +1227,7 @@
                 this.hoverTimer = setTimeout(() => {
                     if (this.currentHoverNode === node) {
                         this.showTooltip(node);
-                        this.scheduleChatgptHydration(node.dataset.id, {
-                            restoreScrollTop: this.scrollContainer ? this.scrollContainer.scrollTop : null
-                        });
+                        this.startChatgptHoverHydration(node.dataset.id);
                     }
                 }, CONFIG.HOVER_PREVIEW_DELAY);
             });
@@ -816,6 +1237,9 @@
                 const relatedTarget = e.relatedTarget;
                 if (relatedTarget && (this.ui.tooltip?.contains(relatedTarget) || this.ui.hitZone?.contains(relatedTarget))) return;
                 if (this.currentHoverNode === node) this.currentHoverNode = null;
+                if (this.chatgptHoverHydrationTargetId === node.dataset.id) {
+                    this.clearChatgptHoverHydration();
+                }
                 this.scheduleTooltipHide();
             });
 
@@ -841,10 +1265,12 @@
             if (this.activeNodeId && this.renderedNodes.has(this.activeNodeId)) {
                 this.renderedNodes.get(this.activeNodeId).node.classList.add('active');
             }
+            this.syncTimelineTrackScrollToActive();
         }
 
         updateActiveFromScroll() {
             if (this.sortedMessages.length === 0) return;
+            if (this.chatgptHoverHydrationRestore || this.isRestoringChatgptHoverScroll) return;
 
             // 调试日志（只输出前几次）
             if (!this.updateScrollCallCount) this.updateScrollCallCount = 0;
@@ -878,7 +1304,12 @@
 
             let closestMsg = null;
 
-            if (isAtBottom && this.sortedMessages.length > 0) {
+            const lockedHydrationMsg = this.chatgptHydrationTargetId
+                ? this.messageMap.get(this.chatgptHydrationTargetId)
+                : null;
+            if (isAtBottom && lockedHydrationMsg?.needsHydration && this.activeNodeId === this.chatgptHydrationTargetId) {
+                closestMsg = lockedHydrationMsg;
+            } else if (isAtBottom && this.sortedMessages.length > 0) {
                 // 滚动到底部时，强制激活最后一个节点
                 closestMsg = this.sortedMessages[this.sortedMessages.length - 1];
                 // 【修复】日志节流，每 2 秒最多输出一次
@@ -903,23 +1334,22 @@
 
             if (closestMsg && closestMsg.stableId !== this.activeNodeId) {
                 this.activeNodeId = closestMsg.stableId;
-                const { startIndex, endIndex } = this.windowState;
-                if (closestMsg.index < startIndex + CONFIG.VIRTUAL_BUFFER || closestMsg.index > endIndex - CONFIG.VIRTUAL_BUFFER) {
-                    this.throttledRender();
-                } else {
-                    this.refreshActiveVisual();
-                }
+                this.refreshActiveVisual();
             }
         }
 
         showTooltip(node) {
-            const data = this.renderedNodes.get(node.dataset.id);
-            if (!data || !this.ui.tooltip) return;
+            if (!node?.dataset?.id || !this.ui.tooltip) return;
+            const data = this.renderedNodes.get(node.dataset.id) || this.messageMap.get(node.dataset.id);
+            if (!data) return;
 
             const messageMeta = this.getFullMessageMeta(node.dataset.id);
             const fullText = messageMeta.text || data.text || '';
             const labelText = messageMeta.label || data.label || '提问';
-            const copyButtonText = messageMeta.copyLabel || data.copyLabel || (labelText === '提问' ? '复制提问' : '复制内容');
+            const canCopy = messageMeta.canCopy !== false && Boolean(normalizeText(fullText));
+            const copyButtonText = canCopy
+                ? (messageMeta.copyLabel || data.copyLabel || (labelText === '提问' ? '复制提问' : '复制内容'))
+                : '内容未加载';
             const previewText = fullText.substring(0, CONFIG.PREVIEW_TEXT_LENGTH);
 
             while (this.ui.tooltip.firstChild) this.ui.tooltip.removeChild(this.ui.tooltip.firstChild);
@@ -930,7 +1360,7 @@
 
             const textDiv = document.createElement('div');
             textDiv.className = 'ai-timeline-tooltip-text';
-            textDiv.textContent = previewText + (fullText.length > CONFIG.PREVIEW_TEXT_LENGTH ? '...' : '') || '(无内容)';
+            textDiv.textContent = previewText + (fullText.length > CONFIG.PREVIEW_TEXT_LENGTH ? '...' : '') || CHATGPT_UNLOADED_PLACEHOLDER;
 
             const copyBtn = document.createElement('button');
             copyBtn.className = 'ai-timeline-tooltip-copy';
@@ -947,7 +1377,12 @@
 
             copyBtn.appendChild(svg);
             copyBtn.appendChild(span);
-            copyBtn.onclick = (e) => { e.stopPropagation(); copyToClipboard(fullText, copyBtn, copyButtonText); };
+            if (canCopy) {
+                copyBtn.onclick = (e) => { e.stopPropagation(); copyToClipboard(fullText, copyBtn, copyButtonText); };
+            } else {
+                copyBtn.disabled = true;
+                copyBtn.setAttribute('aria-label', '内容加载后可复制');
+            }
 
             this.ui.tooltip.appendChild(labelDiv);
             this.ui.tooltip.appendChild(textDiv);
@@ -977,15 +1412,20 @@
             const msg = this.messageMap.get(id);
             if (!msg) {
                 return {
-                    text: '',
+                    text: CHATGPT_UNLOADED_PLACEHOLDER,
                     label: '提问',
-                    copyLabel: '复制提问'
+                    copyLabel: '内容未加载',
+                    canCopy: false
                 };
             }
+            const needsHydration = Boolean(msg.needsHydration);
+            const text = msg.fullText || msg.text || (needsHydration ? CHATGPT_UNLOADED_PLACEHOLDER : '');
             return {
-                text: msg.fullText || msg.text || '',
+                text,
                 label: msg.label || '提问',
-                copyLabel: msg.copyLabel || (msg.label === '提问' ? '复制提问' : '复制内容')
+                copyLabel: needsHydration ? '内容未加载' : (msg.copyLabel || (msg.label === '提问' ? '复制提问' : '复制内容')),
+                needsHydration,
+                canCopy: !needsHydration && Boolean(normalizeText(text))
             };
         }
 
@@ -1001,7 +1441,7 @@
         scheduleTooltipHide() {
             if (this.tooltipHideTimer) clearTimeout(this.tooltipHideTimer);
             this.tooltipHideTimer = setTimeout(() => {
-                if (!this.isMouseOverTooltip && !this.isMouseOverHitZone) this.hideTooltip();
+                if (!this.currentHoverNode && !this.isMouseOverTooltip && !this.isMouseOverHitZone) this.hideTooltip();
             }, CONFIG.TOOLTIP_HIDE_DELAY);
         }
 
@@ -1050,6 +1490,9 @@
                 }
             }
             if (targetEl?.isConnected) {
+                this.activeNodeId = id;
+                this.renderWindow();
+                this.observeChatgptTurnHydration(id);
                 if (this.scrollContainer && typeof this.scrollContainer.scrollTo === 'function') {
                     const containerRect = this.scrollContainer.getBoundingClientRect();
                     const targetRect = targetEl.getBoundingClientRect();
@@ -1062,9 +1505,6 @@
                 } else {
                     targetEl.scrollIntoView({ behavior: CONFIG.SCROLL_BEHAVIOR, block: 'start' });
                 }
-                this.activeNodeId = id;
-                this.renderWindow();
-                this.scheduleChatgptHydration(id);
             } else {
                 this.fullRebuild();
             }
@@ -1125,8 +1565,11 @@
                 }
                 if (this.scrollSyncRAF) return;
                 this.scrollSyncRAF = requestAnimationFrame(() => {
+                    const isHoverPreloadScroll = this.chatgptHoverHydrationRestore || this.isRestoringChatgptHoverScroll;
                     this.updateActiveFromScroll();
-                    this.hideTooltip();
+                    if (!isHoverPreloadScroll && !this.currentHoverNode && !this.isMouseOverTooltip && !this.isMouseOverHitZone) {
+                        this.hideTooltip();
+                    }
                     this.scrollSyncRAF = null;
                 });
             };
@@ -1202,6 +1645,8 @@
         }
 
         destroy() {
+            this.clearChatgptHoverHydration();
+            this.clearChatgptHydrationObserver();
             this.mutationObserver?.disconnect();
             this.clearAllTimers();
             if (this.scrollSyncRAF) cancelAnimationFrame(this.scrollSyncRAF);
