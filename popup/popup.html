@@ -86,10 +86,12 @@
       <section class="view" id="lists-view">
         <div class="card">
           <div class="section-title">导入题单</div>
-          <div class="section-note">你可以一键导入 Hot100，也可以继续粘贴题单链接扩展来源。</div>
+          <div class="section-note">你可以一键导入 Hot100、剑指 Offer 题单，也可以继续粘贴题单链接扩展来源。</div>
           <div class="toolbar">
-            <div class="toolbar-row">
+            <div class="toolbar-row toolbar-row-list-imports">
               <button class="secondary-btn" id="import-hot100">导入 Hot100</button>
+              <button class="secondary-btn import-offer-btn import-offer-btn-compact" id="import-lcr-001-119">导入剑指 Offer 专项突破</button>
+              <button class="secondary-btn import-offer-btn" id="import-lcr-120-194">导入剑指 Offer 第 2 版</button>
             </div>
             <div class="toolbar-row">
               <input class="url-input" id="list-import-url" type="text" placeholder="粘贴题单链接">
@@ -178,6 +180,7 @@
   <script src="../shared/problem-data/review-domain.js"></script>
   <script src="../shared/problem-data/records.js"></script>
   <script src="../shared/problem-data/importers/hot100.js"></script>
+  <script src="../shared/problem-data/importers/static-cn-lists.js"></script>
   <script src="../shared/problem-data/lists.js"></script>
   <script src="../shared/problem-data/providers/nutstore-webdav.js"></script>
   <script src="../shared/problem-data/index.js"></script>

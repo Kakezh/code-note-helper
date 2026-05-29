@@ -128,6 +128,30 @@
         return importProblemListFromUrl(HOT100_CONFIG.sourceUrl);
     }
 
+    async function importBuiltinProblemList(listKey) {
+        const importer = importers.staticCnLists;
+        if (!importer || typeof importer.importByKey !== 'function') {
+            throw new Error('内置题单模块未加载，请刷新后重试。');
+        }
+
+        const nextList = await importer.importByKey(listKey);
+        const currentLists = await getProblemLists();
+        if (currentLists[nextList.listId]) {
+            const error = new Error('当前题单已经存在，无需重复导入。');
+            error.code = 'list_exists';
+            throw error;
+        }
+        return saveProblemList(nextList, { autoSync: true });
+    }
+
+    async function importLcr001To119List() {
+        return importBuiltinProblemList('lcr001to119');
+    }
+
+    async function importLcr120To194List() {
+        return importBuiltinProblemList('lcr120to194');
+    }
+
     async function deleteProblemList(listId, options) {
         const config = {
             autoSync: true,
@@ -290,6 +314,8 @@
         saveProblemList,
         importProblemListFromUrl,
         importHot100StudyPlan,
+        importLcr001To119List,
+        importLcr120To194List,
         deleteProblemList,
         deleteProblemListItem,
         buildListManifest,

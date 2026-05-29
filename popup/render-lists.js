@@ -113,7 +113,7 @@
             return '';
         }
 
-        const currentPage = keyword ? 1 : (state.listPages[list.listId] || 1);
+        const currentPage = state.listPages[list.listId] || 1;
         const pageData = stateUtils.paginate(filteredItems, currentPage, state.pageSize);
         state.listPages[list.listId] = pageData.page;
 
@@ -217,7 +217,7 @@
                   </div>
                   <div class="list-header-actions">
                     <button class="icon-btn" data-toggle-list="${stateUtils.escapeHtml(list.listId)}">${expanded ? '收起' : '展开'}</button>
-                    <button class="icon-btn" data-open-url="${stateUtils.escapeHtml(list.sourceUrl || '')}">来源</button>
+                    ${list.sourceUrl ? `<button class="icon-btn" data-open-url="${stateUtils.escapeHtml(list.sourceUrl)}">来源</button>` : ''}
                     <button class="icon-btn" data-delete-list="${stateUtils.escapeHtml(list.listId)}">删除</button>
                   </div>
                 </div>

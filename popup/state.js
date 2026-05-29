@@ -26,6 +26,8 @@
             deepmlPagination: document.getElementById('deepml-pagination'),
             listImportUrl: document.getElementById('list-import-url'),
             importHot100Btn: document.getElementById('import-hot100'),
+            importLcr001To119Btn: document.getElementById('import-lcr-001-119'),
+            importLcr120To194Btn: document.getElementById('import-lcr-120-194'),
             importListUrlBtn: document.getElementById('import-list-url'),
             listImportStatus: document.getElementById('list-import-status'),
             listsSearchInput: document.getElementById('lists-search'),

@@ -118,7 +118,7 @@ function detectCodeLanguage(code) {
     function getRecommendationHelper() {
         const helper = window.NoteHelperRecommendation;
         if (!helper && !hasWarnedMissingRecommendationHelper) {
-            console.warn('[Note Helper] Recommendation 模块未加载，将降级为内置推荐规则');
+            console.warn('[CodeNote Helper] Recommendation 模块未加载，将降级为内置推荐规则');
             hasWarnedMissingRecommendationHelper = true;
         }
         return helper;
@@ -946,4 +946,3 @@ ${hasLingShenSolution ? `7. **【强制要求】灵神题解优先：**
         LANGUAGE_ALIASES
     };
 })();
-

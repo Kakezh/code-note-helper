@@ -50,11 +50,11 @@
     };
 
     if (!window.NoteHelperRecommendation) {
-        console.warn('[Note Helper] Recommendation 模块未加载，将降级为基础推荐规则');
+        console.warn('[CodeNote Helper] Recommendation 模块未加载，将降级为基础推荐规则');
     }
 
     if (!window.NoteHelperUI || typeof window.NoteHelperUI.init !== 'function') {
-        console.error('[Note Helper] 错误: UI 模块未加载');
+        console.error('[CodeNote Helper] 错误: UI 模块未加载');
         return;
     }
 

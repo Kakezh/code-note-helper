@@ -68,6 +68,36 @@
         return `${fallbackMessage}，下次复习时间为 ${formattedDate}`;
     }
 
+    function formatConsoleDateTime(store, value) {
+        const formattedDate = store && typeof store.formatReviewDate === 'function'
+            ? store.formatReviewDate(value)
+            : '';
+        if (formattedDate) {
+            return formattedDate;
+        }
+        if (!value) {
+            return '';
+        }
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) {
+            return '';
+        }
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        const hour = String(date.getHours()).padStart(2, '0');
+        const minute = String(date.getMinutes()).padStart(2, '0');
+        return `${year}-${month}-${day} ${hour}:${minute}`;
+    }
+
+    function logProblemEvent(message, payload) {
+        if (payload && typeof payload === 'object') {
+            console.info(`[CodeNote Helper] ${message}`, payload);
+            return;
+        }
+        console.info(`[CodeNote Helper] ${message}`);
+    }
+
     function setGeneratingState(generating) {
         isGenerating = Boolean(generating);
         const stopButton = document.getElementById('btn-stop-generate');
@@ -325,7 +355,7 @@
 
     function getSiteRouter() {
         if (!window.NoteHelperSiteRouter) {
-            console.error('[Note Helper] 错误: SiteRouter 模块未加载');
+            console.error('[CodeNote Helper] 错误: SiteRouter 模块未加载');
             return null;
         }
         return window.NoteHelperSiteRouter;
@@ -334,7 +364,7 @@
     function getRecommendationHelper() {
         const helper = window.NoteHelperRecommendation;
         if (!helper && !hasWarnedMissingRecommendationHelper) {
-            console.warn('[Note Helper] Recommendation 模块未加载，将沿用原有题解顺序');
+            console.warn('[CodeNote Helper] Recommendation 模块未加载，将沿用原有题解顺序');
             hasWarnedMissingRecommendationHelper = true;
         }
         return helper;
@@ -349,7 +379,7 @@
             typeof storageApi.set === 'function';
 
         if (!available && !hasWarnedStorageUnavailable) {
-            console.warn('[Note Helper] Storage 模块不可用，图标位置将仅在当前页面生效');
+            console.warn('[CodeNote Helper] Storage 模块不可用，图标位置将仅在当前页面生效');
             hasWarnedStorageUnavailable = true;
         }
         return available ? storageApi : null;
@@ -362,7 +392,7 @@
             typeof store.saveProblemNote === 'function';
 
         if (!available && !hasWarnedProblemDataUnavailable) {
-            console.warn('[Note Helper] ProblemData 模块不可用，题目行为记录将降级');
+            console.warn('[CodeNote Helper] ProblemData 模块不可用，题目行为记录将降级');
             hasWarnedProblemDataUnavailable = true;
         }
         return available ? store : null;
@@ -407,7 +437,7 @@
         try {
             reviewMeta = store.getRecordReviewMeta(record, nowTime);
         } catch (error) {
-            console.warn('[Note Helper] 读取复习提醒状态失败：', error);
+            console.warn('[CodeNote Helper] 读取复习提醒状态失败：', error);
             return false;
         }
 
@@ -435,11 +465,11 @@
                     if (markResult && (markResult.reason === 'already_rated_today' || markResult.reason === 'already_reminded_today')) {
                         return false;
                     }
-                    console.warn('[Note Helper] 写入复习提醒状态失败：', markResult);
+                    console.warn('[CodeNote Helper] 写入复习提醒状态失败：', markResult);
                     return false;
                 }
             } catch (error) {
-                console.warn('[Note Helper] 写入复习提醒状态失败：', error);
+                console.warn('[CodeNote Helper] 写入复习提醒状态失败：', error);
                 return false;
             }
         }
@@ -543,7 +573,7 @@
             maybeCelebrateFromActionResult(actionResult);
             return actionResult;
         } catch (e) {
-            console.warn('[Note Helper] 记录题目行为失败:', actionType, e);
+            console.warn('[CodeNote Helper] 记录题目行为失败:', actionType, e);
             return null;
         }
     }
@@ -554,7 +584,7 @@
         try {
             return await store.getProblemRecordByUrl(window.location.href);
         } catch (error) {
-            console.warn('[Note Helper] 查询题目记录失败，将继续按提交流程处理:', error);
+            console.warn('[CodeNote Helper] 查询题目记录失败，将继续按提交流程处理:', error);
             return null;
         }
     }
@@ -761,22 +791,38 @@
             return false;
         }
 
+        const store = getProblemDataStore();
+        const detectedTitle = extractSubmissionProblemTitle(identity.slug) || getCurrentProblemRecordTitle() || identity.slug;
+        logProblemEvent('检测到提交通过', {
+            title: detectedTitle,
+            site: identity.host,
+            problemKey: identity.slug,
+            submissionId: identity.submissionId || '',
+            trigger
+        });
+
         trackingSubmissionInFlight.add(trackKey);
         try {
             const existingRecord = await getExistingProblemRecordForCurrentUrl();
             if (existingRecord) {
                 markSubmissionTracked(trackKey);
                 clearSubmitIntent(intentState.intentKey);
-                console.info('[Note Helper] 检测到题目已有记录，跳过提交通过自动入库:', {
-                    trackKey,
-                    problemId: existingRecord.id
+                logProblemEvent('检测到题目已有记录，跳过提交通过自动入库', {
+                    title: existingRecord.title || detectedTitle,
+                    site: existingRecord.site || identity.host,
+                    problemKey: existingRecord.problemKey || identity.slug,
+                    hasExistingRecord: true,
+                    autoTracked: false,
+                    recordId: existingRecord.id || '',
+                    submissionId: identity.submissionId || '',
+                    trigger
                 });
                 await maybeTriggerReviewReminder(existingRecord);
                 return false;
             }
 
             const actionResult = await trackCurrentProblemAction('submission_passed', {
-                title: extractSubmissionProblemTitle(identity.slug),
+                title: detectedTitle,
                 submissionId: identity.submissionId,
                 trigger
             });
@@ -785,6 +831,16 @@
             markSubmissionTracked(trackKey);
             clearSubmitIntent(intentState.intentKey);
             showToast('✅ 检测到提交通过，已自动加入题目记录', 2600);
+            logProblemEvent('新题目提交通过自动入库成功', {
+                title: actionResult.title || detectedTitle,
+                site: actionResult.site || identity.host,
+                problemKey: actionResult.problemKey || identity.slug,
+                hasExistingRecord: false,
+                autoTracked: true,
+                submissionId: identity.submissionId || '',
+                nextReviewAtLocal: formatConsoleDateTime(store, actionResult.review && actionResult.review.nextReviewAt),
+                trigger
+            });
             await maybeTriggerReviewReminder(actionResult);
             return true;
         } finally {
@@ -867,7 +923,7 @@
     function getGenerationController() {
         if (generationController) return generationController;
         if (!window.NoteHelperGenerationController || typeof window.NoteHelperGenerationController.create !== 'function') {
-            console.error('[Note Helper] 错误: 共享生成控制器未加载');
+            console.error('[CodeNote Helper] 错误: 共享生成控制器未加载');
             return null;
         }
 
@@ -1034,7 +1090,7 @@
                 await storageApi.set(getIconPositionKey(iconType), relativePosition);
             }
         } catch (e) {
-            console.warn('[Note Helper] 读取图标位置失败:', iconType, e);
+            console.warn('[CodeNote Helper] 读取图标位置失败:', iconType, e);
         }
     }
 
@@ -1049,7 +1105,7 @@
         try {
             await storageApi.set(getIconPositionKey(iconType), relativePosition);
         } catch (e) {
-            console.warn('[Note Helper] 保存图标位置失败:', iconType, e);
+            console.warn('[CodeNote Helper] 保存图标位置失败:', iconType, e);
         }
     }
 
@@ -1539,6 +1595,13 @@
             } catch (e) {
                 console.warn('提取题目内容失败:', e);
             }
+            if (!String(contentText || '').trim()) {
+                console.warn('[CodeNote Helper] 题目内容抓取为空:', {
+                    site: adapter.name || window.location.hostname,
+                    selector: conf.content,
+                    url: window.location.href
+                });
+            }
 
             let userCode = "";
             try {
@@ -1548,7 +1611,9 @@
                     userCode = result.code;
                 }
             } catch (e) {
-                console.warn('获取 Monaco 代码失败:', e);
+                if (!(Messaging && typeof Messaging.isRecoverableRuntimeError === 'function' && Messaging.isRecoverableRuntimeError(e))) {
+                    console.warn('获取 Monaco 代码失败:', e);
+                }
             }
 
             // 自动获取页面标题
@@ -1586,7 +1651,7 @@
                         if (!window.PromptGenerator ||
                             typeof window.PromptGenerator.detectCodeLanguage !== 'function' ||
                             typeof window.PromptGenerator.formatSolutionsForPrompt !== 'function') {
-                            console.error('[Note Helper] 错误: PromptGenerator 模块未加载或接口缺失');
+                            console.error('[CodeNote Helper] 错误: PromptGenerator 模块未加载或接口缺失');
                             showToast('插件加载异常，请刷新页面重试');
                             return;
                         }
@@ -1602,7 +1667,7 @@
                                 console.log('[CodeNote Helper] 命中灵神题解，已置顶用于推荐');
                             }
                         } else if (recommendationHelper) {
-                            console.warn('[Note Helper] Recommendation.sortSolutionsForRecommendation 不可用，保持原题解顺序');
+                            console.warn('[CodeNote Helper] Recommendation.sortSolutionsForRecommendation 不可用，保持原题解顺序');
                         }
 
                         officialText = window.PromptGenerator.formatSolutionsForPrompt(orderedSolutions, userLanguage);
@@ -1682,7 +1747,7 @@
                             }
                         }
                     } catch (error) {
-                        console.warn('[Note Helper] 读取题目复习状态失败：', error);
+                        console.warn('[CodeNote Helper] 读取题目复习状态失败：', error);
                     }
                 }
 
@@ -1698,7 +1763,7 @@
                             nowTime: reviewNowTime
                         });
                     } catch (error) {
-                        console.warn('[Note Helper] 获取复习预估失败：', error);
+                        console.warn('[CodeNote Helper] 获取复习预估失败：', error);
                     }
                 }
 
@@ -1731,8 +1796,16 @@
                     } else {
                         showToast(buildReviewSuccessMessage(store, result, '✅ 记忆状态已更新'), 5000);
                     }
+                    logProblemEvent('复习评分与下次复习时间更新成功', {
+                        title: result.title || getCurrentProblemRecordTitle(),
+                        site: result.site || window.location.hostname,
+                        problemKey: result.problemKey || '',
+                        rating,
+                        isNewRecord: Boolean(result.isNewRecord),
+                        nextReviewAtLocal: formatConsoleDateTime(store, result.review && result.review.nextReviewAt)
+                    });
                 } catch (error) {
-                    console.warn('[Note Helper] 复习评分失败:', error);
+                    console.warn('[CodeNote Helper] 复习评分失败:', error);
                     showToast('⚠️ 记录记忆状态失败，请稍后重试', 3200);
                 }
                 return;
@@ -1753,7 +1826,7 @@
             if (text) {
                 const utils = window.NoteHelperUtils;
                 if (!utils || typeof utils.copyToClipboard !== 'function') {
-                    console.error('[Note Helper] 错误: Utils.copyToClipboard 不可用');
+                    console.error('[CodeNote Helper] 错误: Utils.copyToClipboard 不可用');
                     alert('插件加载异常，请刷新页面重试');
                     return;
                 }
@@ -1790,7 +1863,7 @@
                 maybeCelebrateFromActionResult(saveResult);
                 showToast("✅ 已保存到本地记录");
             } catch (e) {
-                console.warn('[Note Helper] 保存本地记录失败:', e);
+                console.warn('[CodeNote Helper] 保存本地记录失败:', e);
                 showToast("⚠️ 保存本地记录失败");
             }
         };
@@ -1825,7 +1898,7 @@
 
             const router = getSiteRouter();
             if (!router || typeof router.fetchSolutionFromUrl !== 'function') {
-                console.error('[Note Helper] 错误: SiteRouter.fetchSolutionFromUrl 不可用');
+                console.error('[CodeNote Helper] 错误: SiteRouter.fetchSolutionFromUrl 不可用');
                 showToast('插件加载异常，请刷新页面重试');
                 return;
             }
@@ -1840,7 +1913,7 @@
                 if (!window.PromptGenerator ||
                     typeof window.PromptGenerator.detectCodeLanguage !== 'function' ||
                     typeof window.PromptGenerator.filterSolutionByLanguage !== 'function') {
-                    console.error('[Note Helper] 错误: PromptGenerator 模块未加载或接口缺失');
+                    console.error('[CodeNote Helper] 错误: PromptGenerator 模块未加载或接口缺失');
                     showToast('插件加载异常，请刷新页面重试');
                     return;
                 }
@@ -1874,7 +1947,7 @@
                             console.log('[CodeNote Helper] 自定义题解命中灵神，已置顶用于推荐');
                         }
                     } else if (recommendationHelper) {
-                        console.warn('[Note Helper] Recommendation.sortSolutionsForRecommendation 不可用，保持原题解顺序');
+                        console.warn('[CodeNote Helper] Recommendation.sortSolutionsForRecommendation 不可用，保持原题解顺序');
                     }
 
                     const formattedContent = orderedSolutions.map(sol => {
@@ -1940,11 +2013,11 @@ ${content}`;
                 return;
             }
 
-            console.log('[Note Helper] 开始生成 Prompt...');
-            console.log('[Note Helper] PromptGenerator 是否存在:', typeof window.PromptGenerator);
+            console.log('[CodeNote Helper] 开始生成 Prompt...');
+            console.log('[CodeNote Helper] PromptGenerator 是否存在:', typeof window.PromptGenerator);
 
             if (!window.PromptGenerator || typeof window.PromptGenerator.generatePrompt !== 'function') {
-                console.error('[Note Helper] 错误: PromptGenerator 模块未加载！');
+                console.error('[CodeNote Helper] 错误: PromptGenerator 模块未加载！');
                 alert('插件加载异常，请刷新页面重试');
                 return;
             }
@@ -1961,7 +2034,7 @@ ${content}`;
                 url: window.location.href
             });
 
-            console.log('[Note Helper] Prompt 生成完成, 长度:', prompt?.length);
+            console.log('[CodeNote Helper] Prompt 生成完成, 长度:', prompt?.length);
 
             // 保存 API 配置
             if (aiPlatform === 'direct_api') {
@@ -1990,7 +2063,7 @@ ${content}`;
 
             const utils = window.NoteHelperUtils;
             if (!utils || typeof utils.copyToClipboard !== 'function') {
-                console.error('[Note Helper] 错误: Utils.copyToClipboard 不可用');
+                console.error('[CodeNote Helper] 错误: Utils.copyToClipboard 不可用');
                 alert('插件加载异常，请刷新页面重试');
                 return;
             }

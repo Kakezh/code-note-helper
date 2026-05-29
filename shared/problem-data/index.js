@@ -50,6 +50,8 @@
             getProblemListSummary: lists.getProblemListSummary,
             importProblemListFromUrl: lists.importProblemListFromUrl,
             importHot100StudyPlan: lists.importHot100StudyPlan,
+            importLcr001To119List: lists.importLcr001To119List,
+            importLcr120To194List: lists.importLcr120To194List,
             deleteProblemList: lists.deleteProblemList,
             deleteProblemListItem: lists.deleteProblemListItem,
             getSyncMeta: syncCore.getSyncMeta,

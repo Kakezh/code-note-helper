@@ -370,6 +370,22 @@ input {
   gap: 8px;
 }
 
+.toolbar-row-list-imports .secondary-btn {
+  flex: 1;
+  min-width: 0;
+}
+
+.import-offer-btn {
+  font-size: 12px;
+  line-height: 1.35;
+  text-wrap: balance;
+}
+
+.import-offer-btn-compact {
+  font-size: 11px;
+  letter-spacing: -0.01em;
+}
+
 .import-status {
   min-height: 18px;
   padding: 6px 10px;

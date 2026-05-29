@@ -7,7 +7,7 @@
     'use strict';
 
     const SITE_CONFIG = {
-        content: '[data-cy="question-content"], .elfjS, .question-content',
+        content: 'div[data-track-load="description_content"], [data-cy="question-content"], .elfjS, .question-content',
         editorType: 'monaco',
         official: '[data-cy="question-solution"]'
     };

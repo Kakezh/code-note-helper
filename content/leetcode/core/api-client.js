@@ -11,7 +11,7 @@
         return;
     }
 
-    console.error('[Note Helper] 共享 API 客户端未加载，已降级为占位实现');
+    console.error('[CodeNote Helper] 共享 API 客户端未加载，已降级为占位实现');
     window.ApiClient = {
         async callAI() {
             throw new Error('AI 客户端未加载，请刷新页面后重试。');

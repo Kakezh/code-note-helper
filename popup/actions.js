@@ -269,6 +269,12 @@
             if (elements.importHot100Btn) {
                 elements.importHot100Btn.disabled = pending;
             }
+            if (elements.importLcr001To119Btn) {
+                elements.importLcr001To119Btn.disabled = pending;
+            }
+            if (elements.importLcr120To194Btn) {
+                elements.importLcr120To194Btn.disabled = pending;
+            }
             if (elements.importListUrlBtn) {
                 elements.importListUrlBtn.disabled = pending;
             }
@@ -281,6 +287,21 @@
                 return;
             }
             setListImportStatus('');
+        }
+
+        async function runBuiltinListImport(options) {
+            const config = options || {};
+            try {
+                setListImportPending(true, config.pendingMessage || '正在导入题单，请稍候...');
+                await config.run();
+                await refreshData();
+                showToast(config.successMessage || '题单已导入');
+            } catch (error) {
+                logListImportFailure(config.failurePrefix || '[Popup] 导入题单提示：', error);
+                showToast(resolveErrorMessage(error) || '导入失败，请稍后重试', 2600);
+            } finally {
+                setListImportPending(false);
+            }
         }
 
         elements.navButtons.forEach((button) => {
@@ -362,17 +383,34 @@
 
         if (elements.importHot100Btn) {
             elements.importHot100Btn.addEventListener('click', async () => {
-                try {
-                    setListImportPending(true, '正在导入 Hot100，请稍候...');
-                    await store.importHot100StudyPlan();
-                    await refreshData();
-                    showToast('Hot100 已导入');
-                } catch (error) {
-                    logListImportFailure('[Popup] 导入 Hot100 提示：', error);
-                    showToast(resolveErrorMessage(error) || '导入失败，请稍后重试', 2600);
-                } finally {
-                    setListImportPending(false);
-                }
+                await runBuiltinListImport({
+                    pendingMessage: '正在导入 Hot100，请稍候...',
+                    successMessage: 'Hot100 已导入',
+                    failurePrefix: '[Popup] 导入 Hot100 提示：',
+                    run: () => store.importHot100StudyPlan()
+                });
+            });
+        }
+
+        if (elements.importLcr001To119Btn) {
+            elements.importLcr001To119Btn.addEventListener('click', async () => {
+                await runBuiltinListImport({
+                    pendingMessage: '正在导入剑指 Offer 专项突破，请稍候...',
+                    successMessage: '剑指 Offer 专项突破已导入',
+                    failurePrefix: '[Popup] 导入剑指 Offer 专项突破提示：',
+                    run: () => store.importLcr001To119List()
+                });
+            });
+        }
+
+        if (elements.importLcr120To194Btn) {
+            elements.importLcr120To194Btn.addEventListener('click', async () => {
+                await runBuiltinListImport({
+                    pendingMessage: '正在导入剑指 Offer 第 2 版，请稍候...',
+                    successMessage: '剑指 Offer 第 2 版已导入',
+                    failurePrefix: '[Popup] 导入剑指 Offer 第 2 版提示：',
+                    run: () => store.importLcr120To194List()
+                });
             });
         }
 

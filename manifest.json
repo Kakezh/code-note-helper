@@ -55,6 +55,7 @@
         "shared/problem-data/review-domain.js",
         "shared/problem-data/records.js",
         "shared/problem-data/importers/hot100.js",
+        "shared/problem-data/importers/static-cn-lists.js",
         "shared/problem-data/lists.js",
 
         "shared/problem-data/providers/nutstore-webdav.js",
@@ -95,6 +96,7 @@
         "shared/problem-data/review-domain.js",
         "shared/problem-data/records.js",
         "shared/problem-data/importers/hot100.js",
+        "shared/problem-data/importers/static-cn-lists.js",
         "shared/problem-data/lists.js",
 
         "shared/problem-data/providers/nutstore-webdav.js",
@@ -135,6 +137,7 @@
         "shared/problem-data/review-domain.js",
         "shared/problem-data/records.js",
         "shared/problem-data/importers/hot100.js",
+        "shared/problem-data/importers/static-cn-lists.js",
         "shared/problem-data/lists.js",
 
         "shared/problem-data/providers/nutstore-webdav.js",
@@ -248,6 +251,7 @@
         "shared/problem-data/review-domain.js",
         "shared/problem-data/records.js",
         "shared/problem-data/importers/hot100.js",
+        "shared/problem-data/importers/static-cn-lists.js",
         "shared/problem-data/lists.js",
 
         "shared/problem-data/providers/nutstore-webdav.js",
@@ -294,6 +298,7 @@
         "shared/problem-data/review-domain.js",
         "shared/problem-data/records.js",
         "shared/problem-data/importers/hot100.js",
+        "shared/problem-data/importers/static-cn-lists.js",
         "shared/problem-data/lists.js",
 
         "shared/problem-data/providers/nutstore-webdav.js",

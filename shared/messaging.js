@@ -4,11 +4,23 @@
  */
 
 const Messaging = {
-    _contextInvalidatedNotified: false,
+    _recoverableRuntimeNotified: false,
 
-    _isContextInvalidatedError(error) {
+    _getRecoverableRuntimeCode(error) {
         const message = String(error && error.message || error || '').toLowerCase();
-        return message.includes('extension context invalidated');
+        if (message.includes('extension context invalidated')) {
+            return 'context_invalidated';
+        }
+        if (message.includes('message channel closed before a response was received')) {
+            return 'channel_closed';
+        }
+        if (message.includes('message port closed before a response was received')) {
+            return 'port_closed';
+        }
+        if (message.includes('receiving end does not exist')) {
+            return 'receiving_end_missing';
+        }
+        return '';
     },
 
     _normalizeError(error) {
@@ -16,6 +28,10 @@ const Messaging = {
             return error;
         }
         return new Error(String(error || '未知消息错误'));
+    },
+
+    isRecoverableRuntimeError(error) {
+        return Boolean(this._getRecoverableRuntimeCode(error));
     },
 
     /**
@@ -32,10 +48,10 @@ const Messaging = {
             }
             return response;
         } catch (e) {
-            if (this._isContextInvalidatedError(e)) {
-                if (!this._contextInvalidatedNotified) {
-                    this._contextInvalidatedNotified = true;
-                    console.info('[Messaging] 扩展上下文已失效，后续消息发送将等待页面刷新。');
+            if (this.isRecoverableRuntimeError(e)) {
+                if (!this._recoverableRuntimeNotified) {
+                    this._recoverableRuntimeNotified = true;
+                    console.info('[Messaging] 扩展上下文已失效或后台通道已重置，请刷新页面后重试。');
                 }
                 throw this._normalizeError(e);
             }
