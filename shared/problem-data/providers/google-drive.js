@@ -13,7 +13,8 @@
 
     const TOKEN_STORAGE_KEY = 'note_helper_google_drive_token_v1';
     const DEFAULT_FILE_NAME = constants.GOOGLE_DRIVE_DEFAULT_FILE_NAME || 'code-note-helper-full-backup.json';
-    const DRIVE_SCOPE = constants.GOOGLE_DRIVE_SCOPE || 'https://www.googleapis.com/auth/drive.appdata';
+    const DRIVE_SCOPE = constants.GOOGLE_DRIVE_SCOPE || 'https://www.googleapis.com/auth/drive.file';
+    const BACKUP_FOLDER_NAME = constants.GOOGLE_DRIVE_BACKUP_FOLDER_NAME || 'CodeNote Helper Backups';
     const DRIVE_API_BASE = 'https://www.googleapis.com/drive/v3';
     const DRIVE_UPLOAD_BASE = 'https://www.googleapis.com/upload/drive/v3';
 
@@ -59,11 +60,31 @@
         return value || DEFAULT_FILE_NAME;
     }
 
+    function normalizeClientId(clientId) {
+        return String(clientId || '').trim();
+    }
+
+    function isClientIdConfigured(clientId) {
+        const value = normalizeClientId(clientId);
+        if (!value) return false;
+        if (value.includes('REPLACE_WITH_') || value.includes('{0}')) return false;
+        return value.endsWith('.apps.googleusercontent.com');
+    }
+
+    function createClientIdMissingError() {
+        return createGoogleDriveError('请先在设置页填写 Google OAuth Client ID。', {
+            stage: 'auth',
+            errorType: 'auth_config'
+        });
+    }
+
     async function getGoogleDriveSettings() {
         const settings = await syncCore.getSyncSettings();
         const googleDrive = settings.googleDrive || {};
         return {
             enabled: Boolean(googleDrive.enabled),
+            clientId: normalizeClientId(googleDrive.clientId),
+            folderName: BACKUP_FOLDER_NAME,
             fileName: normalizeFileName(googleDrive.fileName)
         };
     }
@@ -78,17 +99,26 @@
 
     async function getGoogleDriveAuthStatus() {
         try {
+            const settings = await getGoogleDriveSettings();
+            if (!isClientIdConfigured(settings.clientId)) {
+                return {
+                    configured: false,
+                    message: '请先填写 Google OAuth Client ID，再登录并测试。'
+                };
+            }
             return await sendRuntimeMessage('GET_GOOGLE_DRIVE_AUTH_STATUS');
         } catch (error) {
             return {
                 configured: false,
-                message: '当前版本暂时不能使用 Google Drive 登录，请先使用本地 JSON 或坚果云备份。'
+                message: getErrorMessage(error, '请先填写 Google OAuth Client ID，再登录并测试。')
             };
         }
     }
 
-    function isTokenUsable(tokenInfo) {
+    function isTokenUsable(tokenInfo, clientId) {
         if (!tokenInfo || !tokenInfo.accessToken) return false;
+        if (normalizeClientId(tokenInfo.clientId) !== normalizeClientId(clientId)) return false;
+        if (String(tokenInfo.scope || '') !== DRIVE_SCOPE) return false;
         const expiresAt = Number(tokenInfo.expiresAt || 0);
         return expiresAt > Date.now() + 60 * 1000;
     }
@@ -98,8 +128,12 @@
             interactive: false,
             ...(options || {})
         };
+        const settings = await getGoogleDriveSettings();
+        if (!isClientIdConfigured(settings.clientId)) {
+            throw createClientIdMissingError();
+        }
         const cached = await readCachedToken();
-        if (isTokenUsable(cached)) {
+        if (isTokenUsable(cached, settings.clientId)) {
             return cached.accessToken;
         }
 
@@ -114,6 +148,7 @@
         try {
             authResult = await sendRuntimeMessage('GOOGLE_DRIVE_AUTHORIZE', {
                 interactive: true,
+                clientId: settings.clientId,
                 scope: DRIVE_SCOPE
             });
         } catch (error) {
@@ -133,6 +168,7 @@
         await writeCachedToken({
             accessToken: authResult.accessToken,
             expiresAt: Number(authResult.expiresAt || 0),
+            clientId: settings.clientId,
             scope: DRIVE_SCOPE,
             updatedAt: new Date().toISOString()
         });
@@ -182,17 +218,72 @@
         return String(value || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     }
 
-    async function findBackupFile(accessToken, fileName) {
-        const query = encodeURIComponent(`name='${escapeDriveQueryValue(fileName)}' and trashed=false`);
-        const fields = encodeURIComponent('files(id,name,modifiedTime,size)');
-        const url = `${DRIVE_API_BASE}/files?spaces=appDataFolder&pageSize=10&q=${query}&fields=${fields}`;
+    function pickUniqueDriveFile(files, label) {
+        if (!files.length) return null;
+        if (files.length === 1) return files[0];
+        throw createGoogleDriveError(`Google Drive 中找到多个同名${label}，请只保留一个后重试`, {
+            stage: 'lookup',
+            errorType: 'remote-duplicate'
+        });
+    }
+
+    async function listDriveFiles(accessToken, query, fields = 'files(id,name,modifiedTime,size,appProperties)') {
+        const url = `${DRIVE_API_BASE}/files?q=${encodeURIComponent(query)}&fields=${encodeURIComponent(fields)}`;
         const response = await requestGoogleDrive(accessToken, {
             method: 'GET',
             url,
             acceptStatuses: [200]
         });
-        const files = response.data && Array.isArray(response.data.files) ? response.data.files : [];
-        return files[0] || null;
+        return response.data && Array.isArray(response.data.files) ? response.data.files : [];
+    }
+
+    async function findBackupFolder(accessToken, folderName) {
+        const name = escapeDriveQueryValue(folderName);
+        const folderMime = 'application/vnd.google-apps.folder';
+        const markerQuery = `name='${name}' and mimeType='${folderMime}' and trashed=false and appProperties has { key='codenoteHelper' and value='backup-folder' }`;
+        const marked = await listDriveFiles(accessToken, markerQuery, 'files(id,name,appProperties)');
+        if (marked.length) return pickUniqueDriveFile(marked, '备份文件夹');
+
+        const nameQuery = `name='${name}' and mimeType='${folderMime}' and trashed=false`;
+        const named = await listDriveFiles(accessToken, nameQuery, 'files(id,name,appProperties)');
+        return pickUniqueDriveFile(named, '备份文件夹');
+    }
+
+    async function createBackupFolder(accessToken, folderName) {
+        const response = await requestGoogleDrive(accessToken, {
+            method: 'POST',
+            url: `${DRIVE_API_BASE}/files?fields=id,name,appProperties`,
+            headers: {
+                'Content-Type': 'application/json; charset=utf-8'
+            },
+            body: JSON.stringify({
+                name: folderName,
+                mimeType: 'application/vnd.google-apps.folder',
+                appProperties: {
+                    codenoteHelper: 'backup-folder'
+                }
+            }),
+            acceptStatuses: [200, 201]
+        });
+        return response.data || null;
+    }
+
+    async function ensureBackupFolder(accessToken, folderName) {
+        const existing = await findBackupFolder(accessToken, folderName);
+        if (existing && existing.id) return existing;
+        return createBackupFolder(accessToken, folderName);
+    }
+
+    async function findBackupFile(accessToken, folderId, fileName) {
+        const name = escapeDriveQueryValue(fileName);
+        const parent = escapeDriveQueryValue(folderId);
+        const markerQuery = `name='${name}' and '${parent}' in parents and trashed=false and appProperties has { key='codenoteHelper' and value='full-backup' }`;
+        const marked = await listDriveFiles(accessToken, markerQuery);
+        if (marked.length) return pickUniqueDriveFile(marked, '备份文件');
+
+        const nameQuery = `name='${name}' and '${parent}' in parents and trashed=false`;
+        const named = await listDriveFiles(accessToken, nameQuery);
+        return pickUniqueDriveFile(named, '备份文件');
     }
 
     function createMultipartBody(metadata, jsonText) {
@@ -221,10 +312,14 @@
                 interactive: options.interactive !== false
             });
             const settings = await getGoogleDriveSettings();
-            const file = await findBackupFile(accessToken, settings.fileName);
+            const folder = await findBackupFolder(accessToken, settings.folderName);
+            const file = folder && folder.id ? await findBackupFile(accessToken, folder.id, settings.fileName) : null;
             await syncCore.markSyncSuccess('googleDrive', 'Google Drive 授权可用');
             return {
                 success: true,
+                folderName: settings.folderName,
+                folderFound: Boolean(folder),
+                folderId: folder && folder.id || '',
                 fileName: settings.fileName,
                 fileFound: Boolean(file),
                 fileId: file && file.id || ''
@@ -249,7 +344,14 @@
             const settings = await getGoogleDriveSettings();
             const snapshot = await syncCore.buildFullSnapshot();
             const jsonText = JSON.stringify(snapshot, null, 2);
-            const existingFile = await findBackupFile(accessToken, settings.fileName);
+            const folder = await ensureBackupFolder(accessToken, settings.folderName);
+            if (!folder || !folder.id) {
+                throw createGoogleDriveError('Google Drive 备份文件夹创建失败，请稍后重试', {
+                    stage: 'folder',
+                    errorType: 'remote-folder'
+                });
+            }
+            const existingFile = await findBackupFile(accessToken, folder.id, settings.fileName);
 
             let response;
             if (existingFile && existingFile.id) {
@@ -266,7 +368,10 @@
                 const multipart = createMultipartBody({
                     name: settings.fileName,
                     mimeType: 'application/json',
-                    parents: ['appDataFolder']
+                    parents: [folder.id],
+                    appProperties: {
+                        codenoteHelper: 'full-backup'
+                    }
                 }, jsonText);
                 response = await requestGoogleDrive(accessToken, {
                     method: 'POST',
@@ -282,6 +387,8 @@
             await syncCore.markSyncSuccess('googleDrive', 'Google Drive 备份成功');
             return {
                 success: true,
+                folderName: settings.folderName,
+                folderId: folder.id,
                 fileName: settings.fileName,
                 fileId: response.data && response.data.id || existingFile && existingFile.id || '',
                 updated: Boolean(existingFile && existingFile.id)
@@ -304,9 +411,10 @@
                 interactive: options.interactive === true
             });
             const settings = await getGoogleDriveSettings();
-            const file = await findBackupFile(accessToken, settings.fileName);
+            const folder = await findBackupFolder(accessToken, settings.folderName);
+            const file = folder && folder.id ? await findBackupFile(accessToken, folder.id, settings.fileName) : null;
             if (!file || !file.id) {
-                throw createGoogleDriveError('Google Drive 中还没有找到备份文件，请先执行一次备份', {
+                throw createGoogleDriveError('没有找到 Google Drive 备份文件，请先完成一次备份。', {
                     stage: 'restore',
                     errorType: 'remote-not-found'
                 });

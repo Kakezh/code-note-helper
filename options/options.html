@@ -64,7 +64,16 @@
             </div>
 
             <div id="google-drive-settings-panel" style="display: none;">
-                <div class="form-hint" id="google-drive-auth-hint" style="margin-top: 12px;">首次使用会打开 Google 登录与授权页面；授权后可在这里备份和恢复数据。</div>
+                <div class="form-grid" style="margin-top: 14px;">
+                    <div class="form-group full">
+                        <label for="google-drive-client-id">Google OAuth Client ID</label>
+                        <input type="text" id="google-drive-client-id" placeholder="粘贴你在 Google Cloud 中创建的 Client ID" spellcheck="false" autocomplete="off">
+                        <div class="form-hint">使用 Google Drive 前，需要先在 Google Cloud 中创建一个 OAuth Client ID，并粘贴到这里。</div>
+                        <div class="form-hint">备份文件会保存到你自己的 Google Drive 中，文件夹名称为 CodeNote Helper Backups，不会上传到开发者服务器。<a href="https://github.com/Philip-Cao-9527/code-note-helper/blob/main/README.md#google-drive-custom-oauth-client-id" target="_blank" rel="noopener noreferrer">查看配置教程</a></div>
+                    </div>
+                </div>
+
+                <div class="form-hint" id="google-drive-auth-hint" style="margin-top: 12px;">填写 Client ID 并保存后，可以点击“登录并测试”打开 Google 登录与授权页面。备份成功后，你可以在 Google 云盘网页中看到 code-note-helper-full-backup.json。</div>
 
                 <div class="actions-row" style="margin-top: 12px;">
                     <button class="btn btn-secondary" id="btn-test-google-drive">登录并测试</button>

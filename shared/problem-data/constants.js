@@ -94,6 +94,7 @@
             },
             googleDrive: {
                 enabled: false,
+                clientId: '',
                 fileName: 'code-note-helper-full-backup.json'
             }
         },
@@ -105,7 +106,8 @@
         DEFAULT_NUTSTORE_REMOTE_FILE_NAME: 'full-backup.json',
         DEFAULT_NUTSTORE_REMOTE_PATH: 'CodeNote-Helper/backups/full-backup.json',
         NUTSTORE_BASE_URL: 'https://dav.jianguoyun.com/dav/',
-        GOOGLE_DRIVE_SCOPE: 'https://www.googleapis.com/auth/drive.appdata',
+        GOOGLE_DRIVE_SCOPE: 'https://www.googleapis.com/auth/drive.file',
+        GOOGLE_DRIVE_BACKUP_FOLDER_NAME: 'CodeNote Helper Backups',
         GOOGLE_DRIVE_DEFAULT_FILE_NAME: 'code-note-helper-full-backup.json',
         PAGE_SIZE: 5
     };

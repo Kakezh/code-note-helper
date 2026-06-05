@@ -30,6 +30,17 @@
         : new Set();
     modules.providers = modules.providers || {};
 
+    function normalizeGoogleDriveClientId(value) {
+        return String(value || '').trim();
+    }
+
+    function isGoogleDriveClientIdConfigured(value) {
+        const clientId = normalizeGoogleDriveClientId(value);
+        if (!clientId) return false;
+        if (clientId.includes('REPLACE_WITH_') || clientId.includes('{0}')) return false;
+        return clientId.endsWith('.apps.googleusercontent.com');
+    }
+
     function normalizeReviewFsrsPreset(value) {
         const preset = String(value || '').trim().toLowerCase();
         if (preset === 'intensive' || preset === 'relaxed' || preset === 'custom') {
@@ -93,6 +104,7 @@
             googleDrive: {
                 ...googleDrive,
                 enabled: Boolean(googleDrive.enabled),
+                clientId: normalizeGoogleDriveClientId(googleDrive.clientId),
                 fileName: String(googleDrive.fileName || DEFAULT_SYNC_SETTINGS.googleDrive.fileName || 'code-note-helper-full-backup.json').trim()
             }
         };
@@ -173,7 +185,7 @@
     function isGoogleDriveConfigComplete(settings) {
         const normalized = normalizeSyncSettings(settings);
         if (!normalized.googleDrive.enabled) return true;
-        return true;
+        return isGoogleDriveClientIdConfigured(normalized.googleDrive.clientId);
     }
 
     function isAnySyncEnabled(settings) {
@@ -203,7 +215,7 @@
         const normalized = normalizeSyncSettings(settings);
         if (!normalized.googleDrive.enabled) return '';
         if (isGoogleDriveConfigComplete(normalized)) return '';
-        return '';
+        return 'Google Drive 已开启，但还没有填写有效的 Google OAuth Client ID，请先到设置页补全。';
     }
 
     async function setSyncSettings(nextSettings) {
@@ -920,6 +932,7 @@
             googleDriveEnabled: settings.googleDrive.enabled,
             googleDriveConfigComplete,
             googleDriveConfigWarning,
+            googleDriveClientId: settings.googleDrive.clientId,
             googleDriveFileName: settings.googleDrive.fileName,
             googleDriveLastSyncAt: meta.lastSyncAt.googleDrive,
             googleDriveLastError: meta.lastError.googleDrive,

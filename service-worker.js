@@ -49,6 +49,9 @@ async function handleMessage(message, sender) {
     }
 }
 
+const GOOGLE_DRIVE_SYNC_SETTINGS_KEY = 'note_helper_sync_settings_v1';
+const GOOGLE_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+
 async function ensureGoogleDriveRuntimePermissions() {
     const permissions = ['identity'];
     const origins = [
@@ -66,29 +69,43 @@ async function ensureGoogleDriveRuntimePermissions() {
     }
 }
 
-function getGoogleDriveOAuthConfig() {
-    const manifest = chrome.runtime.getManifest ? chrome.runtime.getManifest() : {};
-    const oauth2 = manifest.oauth2 || {};
-    const clientId = String(oauth2.client_id || '').trim();
-    const scopes = Array.isArray(oauth2.scopes) && oauth2.scopes.length
-        ? oauth2.scopes
-        : ['https://www.googleapis.com/auth/drive.appdata'];
+function normalizeGoogleDriveClientId(clientId) {
+    return String(clientId || '').trim();
+}
 
-    if (!clientId || clientId.includes('REPLACE_WITH_') || clientId.includes('{0}')) {
-        const error = new Error('当前版本暂时不能使用 Google Drive 登录，请先使用本地 JSON 或坚果云备份。');
+function validateGoogleDriveClientId(clientId) {
+    const value = normalizeGoogleDriveClientId(clientId);
+    if (!value || value.includes('REPLACE_WITH_') || value.includes('{0}')) {
+        const error = new Error('请先在设置页填写 Google OAuth Client ID。');
         error.errorType = 'auth_config';
         throw error;
     }
+    // Google OAuth Client ID 的公开格式稳定以此结尾；只做防误填，不替代 Google 授权结果。
+    if (!value.endsWith('.apps.googleusercontent.com')) {
+        const error = new Error('请确认填写的是 Google OAuth Client ID。');
+        error.errorType = 'auth_config';
+        throw error;
+    }
+    return value;
+}
 
+async function readGoogleDriveClientIdFromSettings() {
+    const storage = await chrome.storage.local.get(GOOGLE_DRIVE_SYNC_SETTINGS_KEY);
+    const settings = storage && storage[GOOGLE_DRIVE_SYNC_SETTINGS_KEY] || {};
+    return normalizeGoogleDriveClientId(settings.googleDrive && settings.googleDrive.clientId);
+}
+
+async function getGoogleDriveOAuthConfig(message = {}) {
+    const clientId = validateGoogleDriveClientId(message.clientId || await readGoogleDriveClientIdFromSettings());
     return {
         clientId,
-        scope: scopes.join(' ')
+        scope: GOOGLE_DRIVE_SCOPE
     };
 }
 
-function getGoogleDriveAuthStatus() {
+async function getGoogleDriveAuthStatus() {
     try {
-        const config = getGoogleDriveOAuthConfig();
+        const config = await getGoogleDriveOAuthConfig();
         return {
             configured: true,
             scope: config.scope
@@ -96,7 +113,7 @@ function getGoogleDriveAuthStatus() {
     } catch (error) {
         return {
             configured: false,
-            message: '当前版本暂时不能使用 Google Drive 登录，请先使用本地 JSON 或坚果云备份。'
+            message: error && error.message ? error.message : '请先在设置页填写 Google OAuth Client ID。'
         };
     }
 }
@@ -133,10 +150,10 @@ function parseGoogleDriveOAuthRedirect(redirectUrl) {
     };
 }
 
-async function handleGoogleDriveAuthorize() {
+async function handleGoogleDriveAuthorize(message = {}) {
     await ensureGoogleDriveRuntimePermissions();
 
-    const { clientId, scope } = getGoogleDriveOAuthConfig();
+    const { clientId, scope } = await getGoogleDriveOAuthConfig(message);
     const redirectUri = chrome.identity.getRedirectURL('google-drive');
     const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
     authUrl.searchParams.set('client_id', clientId);

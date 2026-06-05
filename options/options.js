@@ -131,6 +131,7 @@
             webdavToggle: document.getElementById('webdav-toggle'),
             googleDriveToggle: document.getElementById('google-drive-toggle'),
             googleDriveSettingsPanel: document.getElementById('google-drive-settings-panel'),
+            googleDriveClientId: document.getElementById('google-drive-client-id'),
             btnTestGoogleDrive: document.getElementById('btn-test-google-drive'),
             btnBackupGoogleDrive: document.getElementById('btn-backup-google-drive'),
             btnRestoreGoogleDrive: document.getElementById('btn-restore-google-drive'),
@@ -178,11 +179,29 @@
         const showToast = createToast(elements.toast);
         const permissionHelper = window.NoteHelperApiDomainPermission || null;
 
+        function normalizeGoogleDriveClientId(value) {
+            return String(value || '').trim();
+        }
+
+        function isGoogleDriveClientIdConfigured(value) {
+            const clientId = normalizeGoogleDriveClientId(value);
+            if (!clientId) return false;
+            if (clientId.includes('REPLACE_WITH_') || clientId.includes('{0}')) return false;
+            return clientId.endsWith('.apps.googleusercontent.com');
+        }
+
+        function getGoogleDriveClientIdInput() {
+            return normalizeGoogleDriveClientId(elements.googleDriveClientId && elements.googleDriveClientId.value);
+        }
+
         function applyGoogleDriveAuthState(authStatus) {
-            googleDriveAuthConfigured = !(authStatus && authStatus.configured === false);
+            const clientIdReady = isGoogleDriveClientIdConfigured(getGoogleDriveClientIdInput());
+            googleDriveAuthConfigured = clientIdReady && !(authStatus && authStatus.configured === false);
             const message = googleDriveAuthConfigured
-                ? '首次使用会打开 Google 登录与授权页面；授权后可在这里备份和恢复数据。'
-                : (authStatus && authStatus.message) || '当前版本暂时不能使用 Google Drive 登录，请先使用本地 JSON 或坚果云备份。';
+                ? '首次使用会打开 Google 登录与授权页面；授权后会把备份保存到 CodeNote Helper Backups 文件夹。'
+                : (clientIdReady
+                    ? (authStatus && authStatus.message) || '如果你刚刚修改了 OAuth Client ID 或授权范围，请重新登录并测试。'
+                    : '请先填写 Google OAuth Client ID，再保存并登录测试。');
             if (elements.googleDriveAuthHint) {
                 elements.googleDriveAuthHint.textContent = message;
             }
@@ -345,9 +364,8 @@
                 ? await store.getGoogleDriveAuthStatus()
                 : {
                     configured: false,
-                    message: '当前版本暂时不能使用 Google Drive 登录，请先使用本地 JSON 或坚果云备份。'
+                    message: '请先填写 Google OAuth Client ID，再保存并登录测试。'
                 };
-            applyGoogleDriveAuthState(googleDriveAuthStatus);
 
             elements.timelineToggle.checked = timelineEnabled;
             elements.localLabel.textContent = overview.localLabel || '当前浏览器';
@@ -355,6 +373,10 @@
             elements.lastLocalWrite.textContent = `最近写入：${formatDateTime(overview.lastLocalWriteAt)}`;
 
             elements.webdavToggle.checked = Boolean(settings.webdav && settings.webdav.enabled);
+            if (elements.googleDriveClientId) {
+                elements.googleDriveClientId.value = settings.googleDrive && settings.googleDrive.clientId || '';
+            }
+            applyGoogleDriveAuthState(googleDriveAuthStatus);
             if (elements.googleDriveToggle) {
                 elements.googleDriveToggle.checked = googleDriveAuthConfigured && Boolean(settings.googleDrive && settings.googleDrive.enabled);
             }
@@ -423,6 +445,9 @@
             const normalizedReviewFsrs = reviewSettingsModule && typeof reviewSettingsModule.normalizeReviewFsrsSettings === 'function'
                 ? reviewSettingsModule.normalizeReviewFsrsSettings(reviewFsrsDraft)
                 : reviewFsrsDraft;
+            const previousClientId = normalizeGoogleDriveClientId(current && current.googleDrive && current.googleDrive.clientId);
+            const nextClientId = getGoogleDriveClientIdInput();
+            const clientIdReady = isGoogleDriveClientIdConfigured(nextClientId);
             const nextSettings = {
                 ...(current || {}),
                 reviewFsrs: normalizedReviewFsrs,
@@ -436,11 +461,16 @@
                 },
                 googleDrive: {
                     ...((current && current.googleDrive) || {}),
-                    enabled: googleDriveAuthConfigured && Boolean(elements.googleDriveToggle && elements.googleDriveToggle.checked),
+                    enabled: clientIdReady && Boolean(elements.googleDriveToggle && elements.googleDriveToggle.checked),
+                    clientId: nextClientId,
                     fileName: (current && current.googleDrive && current.googleDrive.fileName) || 'code-note-helper-full-backup.json'
                 }
             };
             await store.setSyncSettings(nextSettings);
+            if (previousClientId && previousClientId !== nextClientId && typeof store.disconnectGoogleDrive === 'function') {
+                await store.disconnectGoogleDrive();
+                showToast('Google Drive 配置已更新，请重新登录并测试', 3200);
+            }
             return {
                 nextSettings
             };
@@ -470,12 +500,23 @@
 
         if (elements.googleDriveToggle) {
             elements.googleDriveToggle.addEventListener('change', () => {
-                if (!googleDriveAuthConfigured) {
+                if (!isGoogleDriveClientIdConfigured(getGoogleDriveClientIdInput())) {
                     elements.googleDriveToggle.checked = false;
                     applyGoogleDrivePanelVisibility();
-                    showToast('当前版本暂时不能使用 Google Drive 登录，请先使用本地 JSON 或坚果云备份。', 3200);
+                    showToast('请先填写 Google OAuth Client ID，再开启 Google Drive 备份。', 3200);
                     return;
                 }
+                applyGoogleDrivePanelVisibility();
+                markSyncDirty();
+            });
+        }
+
+        if (elements.googleDriveClientId) {
+            elements.googleDriveClientId.addEventListener('input', () => {
+                if (elements.googleDriveToggle && !isGoogleDriveClientIdConfigured(getGoogleDriveClientIdInput())) {
+                    elements.googleDriveToggle.checked = false;
+                }
+                applyGoogleDriveAuthState({ configured: isGoogleDriveClientIdConfigured(getGoogleDriveClientIdInput()) });
                 applyGoogleDrivePanelVisibility();
                 markSyncDirty();
             });
@@ -631,10 +672,10 @@
                     setBusy(elements.btnBackupGoogleDrive, true);
                     await saveSyncSettings();
                     await store.backupToGoogleDrive({
-                        interactive: true
+                        interactive: false
                     });
                     await loadSyncSection();
-                    showToast('完整备份已上传到 Google Drive');
+                    showToast('完整备份已上传到 Google Drive 的可见备份文件夹');
                 } catch (error) {
                     console.error('[Options] 备份到 Google Drive 失败：', error);
                     showToast(error.message || '备份失败，请稍后重试', 3600);
@@ -650,7 +691,7 @@
                     setBusy(elements.btnRestoreGoogleDrive, true);
                     await saveSyncSettings();
                     await store.restoreFromGoogleDrive({
-                        interactive: true
+                        interactive: false
                     });
                     await refreshView();
                     showToast('Google Drive 数据已恢复到当前浏览器');
