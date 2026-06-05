@@ -116,12 +116,15 @@
             if (typeof store.shouldShowSyncIndicator === 'function') {
                 return !store.shouldShowSyncIndicator(syncOverview);
             }
-            return !syncOverview.webdavEnabled;
+            return !syncOverview.webdavEnabled && !syncOverview.googleDriveEnabled;
         }
 
         function buildIdleTitle(syncOverview) {
             const suffix = '（状态提示，真实同步按自动周期或点击触发）';
             if (!syncOverview) return '同步已关闭';
+            if (syncOverview.googleDriveEnabled) {
+                return `Google Drive 已启用，点击立即同步${suffix}`;
+            }
             if (syncOverview.webdavEnabled) {
                 return `坚果云已启用，点击立即同步${suffix}`;
             }
@@ -129,7 +132,11 @@
         }
 
         function buildWarningTitle(syncOverview) {
-            if (!syncOverview || !syncOverview.webdavEnabled) return '';
+            if (!syncOverview) return '';
+            if (syncOverview.googleDriveEnabled && !syncOverview.googleDriveConfigComplete) {
+                return syncOverview.googleDriveConfigWarning || 'Google Drive 配置未完整，点击前往设置页补全';
+            }
+            if (!syncOverview.webdavEnabled) return '';
             if (syncOverview.webdavConfigComplete) return '';
             return syncOverview.webdavConfigWarning || '坚果云配置未完整，点击前往设置页补全';
         }
@@ -222,7 +229,7 @@
         }
 
         async function syncAutoScheduler() {
-            const shouldStart = Boolean(state.syncOverview && state.syncOverview.webdavEnabled);
+            const shouldStart = Boolean(state.syncOverview && state.syncOverview.anySyncEnabled);
             if (!shouldStart && schedulerStarted) {
                 if (typeof store.stopAutoSyncScheduler === 'function') {
                     store.stopAutoSyncScheduler();
@@ -323,7 +330,7 @@
                 return;
             }
             if (result && result.warning) {
-                showToast('坚果云配置未完整，请先补全设置', 2800);
+                showToast('部分同步未完成，请到设置页查看最近状态', 2800);
                 await refreshData();
                 return;
             }

@@ -59,9 +59,11 @@
             setSyncSettings: syncCore.setSyncSettings,
             getSyncOverview: syncCore.getSyncOverview,
             isWebdavConfigComplete: syncCore.isWebdavConfigComplete,
+            isGoogleDriveConfigComplete: syncCore.isGoogleDriveConfigComplete,
             isAnySyncEnabled: syncCore.isAnySyncEnabled,
             shouldShowSyncIndicator: syncCore.shouldShowSyncIndicator,
             buildWebdavConfigWarning: syncCore.buildWebdavConfigWarning,
+            buildGoogleDriveConfigWarning: syncCore.buildGoogleDriveConfigWarning,
             exportLocalSnapshot: syncCore.exportLocalSnapshot,
             importLocalSnapshot: syncCore.importLocalSnapshot,
             runUnifiedSyncNow: syncCore.runUnifiedSync,
@@ -72,6 +74,11 @@
             testNutstoreConnection: providers.webdav && providers.webdav.testNutstoreConnection,
             backupToNutstore: providers.webdav && providers.webdav.backupToNutstore,
             restoreFromNutstore: providers.webdav && providers.webdav.restoreFromNutstore,
+            testGoogleDriveConnection: providers.googleDrive && providers.googleDrive.testGoogleDriveConnection,
+            backupToGoogleDrive: providers.googleDrive && providers.googleDrive.backupToGoogleDrive,
+            restoreFromGoogleDrive: providers.googleDrive && providers.googleDrive.restoreFromGoogleDrive,
+            disconnectGoogleDrive: providers.googleDrive && providers.googleDrive.disconnectGoogleDrive,
+            getGoogleDriveAuthStatus: providers.googleDrive && providers.googleDrive.getGoogleDriveAuthStatus,
             getTimelineEnabled: syncCore.getTimelineEnabled,
             setTimelineEnabled: syncCore.setTimelineEnabled
         };

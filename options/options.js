@@ -12,6 +12,10 @@
         return Boolean(webdavEnabled);
     }
 
+    function resolveGoogleDrivePanelVisible(googleDriveEnabled) {
+        return Boolean(googleDriveEnabled);
+    }
+
     function formatDateTime(value) {
         if (!value) return '暂无';
         const date = new Date(value);
@@ -51,6 +55,11 @@
     function setBusy(button, busy) {
         if (!button) return;
         button.disabled = busy;
+    }
+
+    function setDisabled(element, disabled) {
+        if (!element) return;
+        element.disabled = disabled;
     }
 
     function formatWebdavErrorMessage(error, action) {
@@ -120,6 +129,17 @@
             btnImportJson: document.getElementById('btn-import-json'),
             importJsonFile: document.getElementById('import-json-file'),
             webdavToggle: document.getElementById('webdav-toggle'),
+            googleDriveToggle: document.getElementById('google-drive-toggle'),
+            googleDriveSettingsPanel: document.getElementById('google-drive-settings-panel'),
+            btnTestGoogleDrive: document.getElementById('btn-test-google-drive'),
+            btnBackupGoogleDrive: document.getElementById('btn-backup-google-drive'),
+            btnRestoreGoogleDrive: document.getElementById('btn-restore-google-drive'),
+            btnDisconnectGoogleDrive: document.getElementById('btn-disconnect-google-drive'),
+            googleDriveAuthHint: document.getElementById('google-drive-auth-hint'),
+            googleDriveFileLabel: document.getElementById('google-drive-file-label'),
+            googleDriveLastAt: document.getElementById('google-drive-last-at'),
+            googleDriveLastStatus: document.getElementById('google-drive-last-status'),
+            googleDriveLastError: document.getElementById('google-drive-last-error'),
             webdavEmail: document.getElementById('webdav-email'),
             webdavPassword: document.getElementById('webdav-password'),
             webdavRemotePath: document.getElementById('webdav-remote-path'),
@@ -153,9 +173,25 @@
 
         let syncDirty = false;
         let apiDirty = false;
+        let googleDriveAuthConfigured = true;
 
         const showToast = createToast(elements.toast);
         const permissionHelper = window.NoteHelperApiDomainPermission || null;
+
+        function applyGoogleDriveAuthState(authStatus) {
+            googleDriveAuthConfigured = !(authStatus && authStatus.configured === false);
+            const message = googleDriveAuthConfigured
+                ? '首次使用会打开 Google 登录与授权页面；授权后可在这里备份和恢复数据。'
+                : (authStatus && authStatus.message) || '当前版本暂时不能使用 Google Drive 登录，请先使用本地 JSON 或坚果云备份。';
+            if (elements.googleDriveAuthHint) {
+                elements.googleDriveAuthHint.textContent = message;
+            }
+            setDisabled(elements.googleDriveToggle, !googleDriveAuthConfigured);
+            setDisabled(elements.btnTestGoogleDrive, !googleDriveAuthConfigured);
+            setDisabled(elements.btnBackupGoogleDrive, !googleDriveAuthConfigured);
+            setDisabled(elements.btnRestoreGoogleDrive, !googleDriveAuthConfigured);
+            setDisabled(elements.btnDisconnectGoogleDrive, !googleDriveAuthConfigured);
+        }
 
         function markSyncDirty() {
             if (syncDirty) return;
@@ -191,6 +227,15 @@
             if (!elements.webdavSettingsPanel) return;
             elements.webdavSettingsPanel.style.display = resolveWebdavPanelVisible(
                 elements.webdavToggle && elements.webdavToggle.checked
+            )
+                ? ''
+                : 'none';
+        }
+
+        function applyGoogleDrivePanelVisibility() {
+            if (!elements.googleDriveSettingsPanel) return;
+            elements.googleDriveSettingsPanel.style.display = resolveGoogleDrivePanelVisible(
+                !googleDriveAuthConfigured || (elements.googleDriveToggle && elements.googleDriveToggle.checked)
             )
                 ? ''
                 : 'none';
@@ -296,6 +341,13 @@
                 store.getSyncSettings(),
                 store.getTimelineEnabled()
             ]);
+            const googleDriveAuthStatus = typeof store.getGoogleDriveAuthStatus === 'function'
+                ? await store.getGoogleDriveAuthStatus()
+                : {
+                    configured: false,
+                    message: '当前版本暂时不能使用 Google Drive 登录，请先使用本地 JSON 或坚果云备份。'
+                };
+            applyGoogleDriveAuthState(googleDriveAuthStatus);
 
             elements.timelineToggle.checked = timelineEnabled;
             elements.localLabel.textContent = overview.localLabel || '当前浏览器';
@@ -303,6 +355,21 @@
             elements.lastLocalWrite.textContent = `最近写入：${formatDateTime(overview.lastLocalWriteAt)}`;
 
             elements.webdavToggle.checked = Boolean(settings.webdav && settings.webdav.enabled);
+            if (elements.googleDriveToggle) {
+                elements.googleDriveToggle.checked = googleDriveAuthConfigured && Boolean(settings.googleDrive && settings.googleDrive.enabled);
+            }
+            if (elements.googleDriveFileLabel) {
+                elements.googleDriveFileLabel.textContent = overview.googleDriveFileName || '暂无';
+            }
+            if (elements.googleDriveLastAt) {
+                elements.googleDriveLastAt.textContent = formatDateTime(overview.googleDriveLastSyncAt);
+            }
+            if (elements.googleDriveLastStatus) {
+                elements.googleDriveLastStatus.textContent = formatStatusText(overview.googleDriveLastStatus);
+            }
+            if (elements.googleDriveLastError) {
+                elements.googleDriveLastError.textContent = overview.googleDriveLastError?.message || '暂无';
+            }
             elements.webdavEmail.value = settings.webdav?.email || '';
             elements.webdavPassword.value = settings.webdav?.appPassword || '';
             elements.webdavRemotePath.value = settings.webdav?.remotePath || DEFAULT_WEBDAV_REMOTE_PATH;
@@ -334,6 +401,7 @@
             }
 
             applyWebdavPanelVisibility();
+            applyGoogleDrivePanelVisibility();
             applyReviewFsrsPanelVisibility();
             clearSyncDirty();
         }
@@ -365,6 +433,11 @@
                     appPassword: elements.webdavPassword.value.trim(),
                     baseUrl: (current && current.webdav && current.webdav.baseUrl) || '',
                     remotePath: elements.webdavRemotePath.value.trim() || DEFAULT_WEBDAV_REMOTE_PATH
+                },
+                googleDrive: {
+                    ...((current && current.googleDrive) || {}),
+                    enabled: googleDriveAuthConfigured && Boolean(elements.googleDriveToggle && elements.googleDriveToggle.checked),
+                    fileName: (current && current.googleDrive && current.googleDrive.fileName) || 'code-note-helper-full-backup.json'
                 }
             };
             await store.setSyncSettings(nextSettings);
@@ -395,6 +468,19 @@
             markSyncDirty();
         });
 
+        if (elements.googleDriveToggle) {
+            elements.googleDriveToggle.addEventListener('change', () => {
+                if (!googleDriveAuthConfigured) {
+                    elements.googleDriveToggle.checked = false;
+                    applyGoogleDrivePanelVisibility();
+                    showToast('当前版本暂时不能使用 Google Drive 登录，请先使用本地 JSON 或坚果云备份。', 3200);
+                    return;
+                }
+                applyGoogleDrivePanelVisibility();
+                markSyncDirty();
+            });
+        }
+
         if (elements.reviewFsrsToggle) {
             elements.reviewFsrsToggle.addEventListener('change', () => {
                 applyReviewFsrsPanelVisibility();
@@ -417,6 +503,7 @@
         });
 
         [elements.webdavEmail, elements.webdavPassword, elements.webdavRemotePath].forEach((input) => {
+            if (!input) return;
             input.addEventListener('input', () => {
                 markSyncDirty();
             });
@@ -518,6 +605,81 @@
                 setBusy(elements.btnRestoreWebdav, false);
             }
         });
+
+        if (elements.btnTestGoogleDrive) {
+            elements.btnTestGoogleDrive.addEventListener('click', async () => {
+                try {
+                    setBusy(elements.btnTestGoogleDrive, true);
+                    await saveSyncSettings();
+                    await store.testGoogleDriveConnection({
+                        interactive: true
+                    });
+                    await loadSyncSection();
+                    showToast('Google Drive 授权可用，可以开始备份');
+                } catch (error) {
+                    console.error('[Options] Google Drive 授权测试失败：', error);
+                    showToast(error.message || 'Google Drive 授权失败，请稍后重试', 3600);
+                } finally {
+                    setBusy(elements.btnTestGoogleDrive, false);
+                }
+            });
+        }
+
+        if (elements.btnBackupGoogleDrive) {
+            elements.btnBackupGoogleDrive.addEventListener('click', async () => {
+                try {
+                    setBusy(elements.btnBackupGoogleDrive, true);
+                    await saveSyncSettings();
+                    await store.backupToGoogleDrive({
+                        interactive: true
+                    });
+                    await loadSyncSection();
+                    showToast('完整备份已上传到 Google Drive');
+                } catch (error) {
+                    console.error('[Options] 备份到 Google Drive 失败：', error);
+                    showToast(error.message || '备份失败，请稍后重试', 3600);
+                } finally {
+                    setBusy(elements.btnBackupGoogleDrive, false);
+                }
+            });
+        }
+
+        if (elements.btnRestoreGoogleDrive) {
+            elements.btnRestoreGoogleDrive.addEventListener('click', async () => {
+                try {
+                    setBusy(elements.btnRestoreGoogleDrive, true);
+                    await saveSyncSettings();
+                    await store.restoreFromGoogleDrive({
+                        interactive: true
+                    });
+                    await refreshView();
+                    showToast('Google Drive 数据已恢复到当前浏览器');
+                } catch (error) {
+                    console.error('[Options] 从 Google Drive 恢复失败：', error);
+                    showToast(error.message || '恢复失败，请稍后重试', 3600);
+                } finally {
+                    setBusy(elements.btnRestoreGoogleDrive, false);
+                }
+            });
+        }
+
+        if (elements.btnDisconnectGoogleDrive) {
+            elements.btnDisconnectGoogleDrive.addEventListener('click', async () => {
+                try {
+                    setBusy(elements.btnDisconnectGoogleDrive, true);
+                    if (typeof store.disconnectGoogleDrive === 'function') {
+                        await store.disconnectGoogleDrive();
+                    }
+                    await loadSyncSection();
+                    showToast('已断开 Google Drive 授权');
+                } catch (error) {
+                    console.error('[Options] 断开 Google Drive 授权失败：', error);
+                    showToast('断开授权失败，请稍后重试', 3000);
+                } finally {
+                    setBusy(elements.btnDisconnectGoogleDrive, false);
+                }
+            });
+        }
 
         elements.btnSaveApi.addEventListener('click', async () => {
             try {

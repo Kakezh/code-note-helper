@@ -31,7 +31,7 @@
 
         <section class="card">
             <div class="card-title">数据与同步</div>
-            <div class="card-note">所有数据默认保存在当前浏览器。你可以导出 JSON，也可以使用坚果云进行完整备份。</div>
+            <div class="card-note">所有数据默认保存在当前浏览器。你可以导出 JSON，也可以选择云端完整备份。</div>
 
             <div class="section-grid">
                 <div class="summary-item">
@@ -54,8 +54,49 @@
 
             <div class="switch-row" style="margin-top: 18px;">
                 <div class="switch-copy">
+                    <div class="switch-title">Google Drive 完整备份（推荐）</div>
+                    <div class="switch-desc">用于完整备份题目记录、题单和笔记。适合需要多设备恢复或更稳定云端备份的用户。</div>
+                </div>
+                <label class="switch">
+                    <input type="checkbox" id="google-drive-toggle">
+                    <span class="slider"></span>
+                </label>
+            </div>
+
+            <div id="google-drive-settings-panel" style="display: none;">
+                <div class="form-hint" id="google-drive-auth-hint" style="margin-top: 12px;">首次使用会打开 Google 登录与授权页面；授权后可在这里备份和恢复数据。</div>
+
+                <div class="actions-row" style="margin-top: 12px;">
+                    <button class="btn btn-secondary" id="btn-test-google-drive">登录并测试</button>
+                    <button class="btn btn-secondary" id="btn-backup-google-drive">立即备份到 Google Drive</button>
+                    <button class="btn btn-secondary" id="btn-restore-google-drive">从 Google Drive 恢复</button>
+                    <button class="btn btn-secondary" id="btn-disconnect-google-drive">断开授权</button>
+                </div>
+
+                <div class="status-box" style="margin-top: 14px;">
+                    <div class="status-row">
+                        <span>备份文件</span>
+                        <strong id="google-drive-file-label">暂无</strong>
+                    </div>
+                    <div class="status-row">
+                        <span>最近备份 / 恢复</span>
+                        <strong id="google-drive-last-at">暂无</strong>
+                    </div>
+                    <div class="status-row">
+                        <span>最近状态</span>
+                        <strong id="google-drive-last-status">暂无</strong>
+                    </div>
+                    <div class="status-row">
+                        <span>最近错误</span>
+                        <strong id="google-drive-last-error">暂无</strong>
+                    </div>
+                </div>
+            </div>
+
+            <div class="switch-row" style="margin-top: 18px;">
+                <div class="switch-copy">
                     <div class="switch-title">坚果云完整备份</div>
-                    <div class="switch-desc">用于完整备份题目正文与题单数据。默认写入固定远端目录，避免根目录覆盖风险。</div>
+                    <div class="switch-desc">用于完整备份题目记录、题单和笔记。默认写入固定远端目录，避免根目录覆盖风险。</div>
                 </div>
                 <label class="switch">
                     <input type="checkbox" id="webdav-toggle">
@@ -217,6 +258,7 @@
     <script src="../shared/problem-data/importers/static-cn-lists.js"></script>
     <script src="../shared/problem-data/lists.js"></script>
     <script src="../shared/problem-data/providers/nutstore-webdav.js"></script>
+    <script src="../shared/problem-data/providers/google-drive.js"></script>
     <script src="../shared/problem-data/index.js"></script>
     <script src="../shared/problem-data.js"></script>
     <script src="options.js"></script>

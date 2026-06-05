@@ -1050,7 +1050,7 @@
                     </div>
                     <div id="tc-stream-status" class="tc-stream-status" style="display:none"></div>
                     <details id="tc-thinking-details" class="tc-thinking-details" hidden>
-                        <summary>查看思考内容（实验性）</summary>
+                        <summary>查看思考内容</summary>
                         <pre id="tc-thinking-content"></pre>
                     </details>
                     <div id="tc-result-render"></div>
@@ -1090,6 +1090,17 @@
             notesElement.value = '';
         }
         showRenderedResult('', { forceShow: false, isError: false });
+    }
+
+    function isModalVisible() {
+        return Boolean(modal && modal.classList.contains('show'));
+    }
+
+    function handleModalEscapeKeydown(event) {
+        if (!event || event.key !== 'Escape' || !isModalVisible()) return;
+        event.preventDefault();
+        event.stopPropagation();
+        closeModal();
     }
 
     async function loadApiSettings() {
@@ -1628,11 +1639,7 @@
             updateApiSettingsVisibility();
         });
 
-        document.addEventListener('keydown', (event) => {
-            if (event.key === 'Escape' && modal && modal.classList.contains('show')) {
-                closeModal();
-            }
-        });
+        document.addEventListener('keydown', handleModalEscapeKeydown, true);
     }
 
     function createToast() {
@@ -1708,5 +1715,4 @@
         setVisible: setUiVisible
     };
 })();
-
 

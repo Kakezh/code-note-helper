@@ -1,86 +1,94 @@
-# Privacy Policy
+# 隐私政策
 
-Last updated: March 30, 2026
+最后更新：2026-06-05
 
-## 1. Overview
+## 1. 概览
 
-CodeNote Helper is designed to work locally in your browser.
+CodeNote Helper 默认在你的浏览器本地工作。
 
-By default, your records, notes, progress data, and settings stay inside your local browser profile on your own computer. The extension does not operate a developer-owned cloud service, does not run analytics, and does not collect personal data for the developer.
+默认情况下，你的题目记录、笔记、进度数据和设置都保存在当前浏览器配置中。本扩展没有开发者自建云服务，不运行统计分析，也不会为了开发者收集个人数据。
 
-## 2. What data may be stored locally
+## 2. 本地可能保存哪些数据
 
-Depending on which features you use, the extension may store the following data in your browser:
+根据你使用的功能，扩展可能会在浏览器本地保存以下数据：
 
-- Problem activity records, such as copied prompts, generated notes, saved notes, and timestamps
-- Study list data, such as imported list URLs, list items, progress states, and completion statistics
-- Local note content that you explicitly save
-- API settings that you choose to store locally, such as Base URL, model name, and API key
-- Timeline settings, sync settings, and backup metadata
-- TorchCode notebook records, including notebook identifiers, titles, source links, and saved notes
+- 题目行为记录，例如复制提示词、生成笔记、保存笔记和对应时间
+- 题单数据，例如导入来源、题目条目、进度状态和完成统计
+- 你主动保存的本地笔记内容
+- 你选择保存的 API 配置，例如 Base URL、模型名称和 API Key
+- 时间轴设置、同步设置和备份状态信息
+- TorchCode / Deep-ML 题目记录，包括题目标识、标题、来源链接和保存的笔记
 
-## 3. When data may leave your local computer
+## 3. 数据什么时候会离开本地
 
-Your data only leaves your local browser when you explicitly choose one of the following actions:
+只有在你主动使用以下功能时，数据才会离开当前浏览器：
 
-### A. Direct API note generation
+### A. 直连 API 生成笔记
 
-If you configure an LLM API and use direct generation, the prompt you generate is sent directly to the API endpoint that you configured.
+如果你配置了大语言模型 API 并使用页面内生成，扩展会把生成的提示词直接发送到你填写的 API 地址。
 
-The extension does not proxy this data through any developer server.
+这些数据不会经过开发者服务器。
 
-### B. Nutstore / WebDAV backup
+### B. Google Drive 备份
 
-If you manually enable Nutstore backup or restore, the extension sends backup data directly to the WebDAV space that belongs to you.
+如果你启用 Google Drive 备份或恢复，扩展会把完整备份数据直接发送到你自己的 Google Drive。备份和恢复需要你在设置页主动授权或主动点击相关按钮。
 
-The developer does not receive a copy of this data.
+开发者不会收到这些数据的副本。
 
-### C. JSON export / import
+### C. 坚果云 / WebDAV 备份
 
-If you export a JSON backup, the file is written to a location that you choose through your browser download flow.
+如果你启用坚果云备份或恢复，扩展会把备份数据直接发送到你自己的 WebDAV 空间。
 
-## 4. What the developer does not collect
+开发者不会收到这些数据的副本。
 
-The developer does not collect:
+### D. JSON 导出 / 导入
 
-- Your LeetCode notes
-- Your TorchCode notebook content
-- Your imported study lists
-- Your browsing history outside the supported pages
-- Your API key through a developer server
-- Analytics, tracking identifiers, or advertising profiles
+如果你导出 JSON 备份，文件会通过浏览器下载流程保存到你选择的位置。
 
-## 5. Permissions and why they are used
+## 4. 开发者不会收集什么
 
-The extension requests only the permissions needed for its features:
+开发者不会收集：
 
-- `storage`: save settings, notes, progress records, and sync metadata
-- `activeTab` / `scripting`: interact with supported pages and read notebook or editor content when you trigger the helper
-- `clipboardWrite`: copy prompts and generated notes
-- Supported site access: inject the helper on LeetCode, TorchCode, and supported AI chat pages
+- 你的 LeetCode 笔记
+- 你的 TorchCode / Deep-ML 笔记内容
+- 你导入的题单
+- 你在支持站点之外的浏览历史
+- 通过开发者服务器收集你的 API Key
+- 分析数据、跟踪标识或广告画像
 
-## 6. Data control
+## 5. 权限用途
 
-You remain in control of your data.
+扩展只申请功能所需权限：
 
-You can:
+- `storage`：保存设置、笔记、进度记录和同步状态
+- `activeTab` / `scripting`：在你使用功能时与支持站点页面交互，读取题目、代码或对话内容
+- `clipboardWrite`：在你点击复制时写入提示词或生成结果
+- `identity`：仅在你使用 Google Drive 备份并主动授权时打开 Google 授权流程
+- 支持站点访问：在 LeetCode、CodeFun2000、Deep-ML、TorchCode 和支持的 AI 对话页面启用扩展功能
+- 你授权的 Google API 访问：仅用于把备份文件上传到你自己的 Google Drive，或从中恢复备份
 
-- Keep everything local and never enable sync
-- Export your local data as JSON
-- Import your own backup JSON
-- Disable Nutstore backup at any time
-- Remove the extension to stop future data processing on supported pages
+## 6. 数据控制
 
-## 7. Changes to this policy
+你始终可以控制自己的数据。
 
-If this policy changes, the updated version will be published in this repository and shipped with future extension versions.
+你可以：
 
-## 8. Contact
+- 保持全部数据只在本地，不启用同步
+- 导出本地 JSON 备份
+- 导入你自己的 JSON 备份
+- 随时关闭 Google Drive 或坚果云备份
+- 删除扩展，停止后续在支持页面上的数据处理
 
-Project repository:
+## 7. 政策变更
+
+如果隐私政策发生变化，更新后的版本会发布在本仓库，并随后续扩展版本一起提供。
+
+## 8. 联系方式
+
+项目仓库：
 
 - https://github.com/Philip-Cao-9527/code-note-helper
 
-Issue tracker:
+问题反馈：
 
 - https://github.com/Philip-Cao-9527/code-note-helper/issues

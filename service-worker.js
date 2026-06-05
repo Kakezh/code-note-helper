@@ -1,6 +1,6 @@
 ﻿/**
  * 后台 Service Worker
- * 版本：1.0.90
+ * 版本：1.1.3
  */
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -36,8 +36,204 @@ async function handleMessage(message, sender) {
             return handleSetStorage(message.data);
         case 'WEBDAV_REQUEST':
             return handleWebdavRequest(message);
+        case 'GOOGLE_DRIVE_AUTHORIZE':
+            return handleGoogleDriveAuthorize(message);
+        case 'GET_GOOGLE_DRIVE_AUTH_STATUS':
+            return getGoogleDriveAuthStatus();
+        case 'GOOGLE_DRIVE_REQUEST':
+            return handleGoogleDriveRequest(message);
+        case 'GOOGLE_DRIVE_REVOKE':
+            return handleGoogleDriveRevoke(message);
         default:
             throw new Error(`未知消息类型：${type}`);
+    }
+}
+
+async function ensureGoogleDriveRuntimePermissions() {
+    const permissions = ['identity'];
+    const origins = [
+        'https://www.googleapis.com/*',
+        'https://oauth2.googleapis.com/*'
+    ];
+    const granted = await chrome.permissions.request({
+        permissions,
+        origins
+    });
+    if (!granted) {
+        const error = new Error('你取消了 Google Drive 授权，备份不会上传。');
+        error.errorType = 'permission_denied';
+        throw error;
+    }
+}
+
+function getGoogleDriveOAuthConfig() {
+    const manifest = chrome.runtime.getManifest ? chrome.runtime.getManifest() : {};
+    const oauth2 = manifest.oauth2 || {};
+    const clientId = String(oauth2.client_id || '').trim();
+    const scopes = Array.isArray(oauth2.scopes) && oauth2.scopes.length
+        ? oauth2.scopes
+        : ['https://www.googleapis.com/auth/drive.appdata'];
+
+    if (!clientId || clientId.includes('REPLACE_WITH_') || clientId.includes('{0}')) {
+        const error = new Error('当前版本暂时不能使用 Google Drive 登录，请先使用本地 JSON 或坚果云备份。');
+        error.errorType = 'auth_config';
+        throw error;
+    }
+
+    return {
+        clientId,
+        scope: scopes.join(' ')
+    };
+}
+
+function getGoogleDriveAuthStatus() {
+    try {
+        const config = getGoogleDriveOAuthConfig();
+        return {
+            configured: true,
+            scope: config.scope
+        };
+    } catch (error) {
+        return {
+            configured: false,
+            message: '当前版本暂时不能使用 Google Drive 登录，请先使用本地 JSON 或坚果云备份。'
+        };
+    }
+}
+
+function parseGoogleDriveOAuthRedirect(redirectUrl) {
+    if (!redirectUrl) {
+        const error = new Error('Google Drive 授权未完成，请稍后重试');
+        error.errorType = 'auth';
+        throw error;
+    }
+
+    const url = new URL(redirectUrl);
+    const hashParams = new URLSearchParams(String(url.hash || '').replace(/^#/, ''));
+    const queryParams = new URLSearchParams(String(url.search || '').replace(/^\?/, ''));
+    const oauthError = hashParams.get('error') || queryParams.get('error');
+    if (oauthError) {
+        const detail = hashParams.get('error_description') || queryParams.get('error_description') || oauthError;
+        const error = new Error(detail);
+        error.errorType = oauthError === 'access_denied' ? 'permission_denied' : 'auth';
+        throw error;
+    }
+
+    const accessToken = hashParams.get('access_token') || queryParams.get('access_token');
+    if (!accessToken) {
+        const error = new Error('Google Drive 授权未完成，请稍后重试');
+        error.errorType = 'auth';
+        throw error;
+    }
+
+    const expiresIn = Number(hashParams.get('expires_in') || queryParams.get('expires_in') || 3600);
+    return {
+        accessToken,
+        expiresAt: Date.now() + Math.max(1, expiresIn) * 1000
+    };
+}
+
+async function handleGoogleDriveAuthorize() {
+    await ensureGoogleDriveRuntimePermissions();
+
+    const { clientId, scope } = getGoogleDriveOAuthConfig();
+    const redirectUri = chrome.identity.getRedirectURL('google-drive');
+    const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+    authUrl.searchParams.set('client_id', clientId);
+    authUrl.searchParams.set('response_type', 'token');
+    authUrl.searchParams.set('redirect_uri', redirectUri);
+    authUrl.searchParams.set('scope', scope);
+    authUrl.searchParams.set('prompt', 'consent');
+
+    try {
+        const redirectUrl = await chrome.identity.launchWebAuthFlow({
+            url: authUrl.toString(),
+            interactive: true
+        });
+        return parseGoogleDriveOAuthRedirect(redirectUrl);
+    } catch (error) {
+        if (error && error.errorType) {
+            throw error;
+        }
+        const wrapped = new Error(`Google Drive 授权未完成：${error && error.message ? error.message : String(error)}`);
+        wrapped.errorType = 'auth';
+        throw wrapped;
+    }
+}
+
+async function handleGoogleDriveRequest({
+    method = 'GET',
+    url,
+    headers = {},
+    body = null
+}) {
+    if (!url || !String(url).startsWith('https://www.googleapis.com/')) {
+        return {
+            ok: false,
+            status: 0,
+            statusText: '',
+            headers: {},
+            data: '',
+            errorType: 'validation',
+            errorMessage: 'Google Drive 请求地址无效'
+        };
+    }
+
+    try {
+        const response = await fetch(url, {
+            method: String(method || 'GET').toUpperCase(),
+            headers: normalizeHeaders(headers),
+            body
+        });
+        const contentType = response.headers.get('content-type') || '';
+        const data = contentType.includes('application/json')
+            ? await response.json()
+            : await response.text();
+        return {
+            ok: response.ok,
+            status: response.status,
+            statusText: response.statusText,
+            headers: Object.fromEntries(response.headers.entries()),
+            data
+        };
+    } catch (error) {
+        return {
+            ok: false,
+            status: 0,
+            statusText: '',
+            headers: {},
+            data: '',
+            errorType: classifyWebdavError(error).errorType,
+            errorMessage: error && error.message ? error.message : String(error)
+        };
+    }
+}
+
+async function handleGoogleDriveRevoke({ accessToken }) {
+    const token = String(accessToken || '').trim();
+    if (!token) return { success: true, skipped: true };
+    try {
+        if (chrome.identity && typeof chrome.identity.removeCachedAuthToken === 'function') {
+            await chrome.identity.removeCachedAuthToken({
+                token
+            });
+        }
+        const response = await fetch('https://oauth2.googleapis.com/revoke', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: `token=${encodeURIComponent(token)}`
+        });
+        return {
+            success: response.ok,
+            status: response.status
+        };
+    } catch (error) {
+        return {
+            success: false,
+            error: error && error.message ? error.message : String(error)
+        };
     }
 }
 

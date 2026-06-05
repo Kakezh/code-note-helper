@@ -1006,6 +1006,24 @@
         resetThinkingPanel();
     }
 
+    function isModalVisible() {
+        return Boolean(modal && modal.style.display === 'block');
+    }
+
+    function handleModalEscapeKeydown(e) {
+        if (!e || e.key !== 'Escape') return;
+        if (achievementOverlay && achievementOverlay.classList.contains('show')) {
+            e.preventDefault();
+            e.stopPropagation();
+            hideAchievementOverlay();
+            return;
+        }
+        if (!isModalVisible()) return;
+        e.preventDefault();
+        e.stopPropagation();
+        closeModalAndReset();
+    }
+
     function getIconPositionKey(iconType) {
         return `${ICON_POSITION_KEY_PREFIX}${window.location.hostname}_${iconType}`;
     }
@@ -1480,7 +1498,7 @@
             </div>
             <div id="api-stream-status" class="api-stream-status" style="display:none"></div>
             <details id="api-thinking-details" class="api-thinking-details" hidden>
-                <summary>查看思考内容（实验性）</summary>
+                <summary>查看思考内容</summary>
                 <pre id="api-thinking-content"></pre>
             </details>
             <div id="api-output-render"></div>
@@ -1530,18 +1548,7 @@
             });
         })();
 
-        // Escape 关闭
-        document.addEventListener('keydown', (e) => {
-            if (e.key !== 'Escape') return;
-            if (achievementOverlay && achievementOverlay.classList.contains('show')) {
-                e.preventDefault();
-                hideAchievementOverlay();
-                return;
-            }
-            if (modal.style.display === 'block') {
-                closeModalAndReset();
-            }
-        });
+        document.addEventListener('keydown', handleModalEscapeKeydown, true);
 
         // === 事件绑定 ===
         const toggleApiSettings = () => {

@@ -56,13 +56,20 @@
             localRevision: 0,
             lastLocalWriteAt: null,
             lastSyncAt: {
-                webdav: null
+                webdav: null,
+                googleDrive: null
             },
             lastError: {
-                webdav: null
+                webdav: null,
+                googleDrive: null
             },
             lastStatus: {
                 webdav: {
+                    state: null,
+                    message: '',
+                    at: null
+                },
+                googleDrive: {
                     state: null,
                     message: '',
                     at: null
@@ -84,6 +91,10 @@
                 email: '',
                 appPassword: '',
                 remotePath: 'CodeNote-Helper/backups/full-backup.json'
+            },
+            googleDrive: {
+                enabled: false,
+                fileName: 'code-note-helper-full-backup.json'
             }
         },
         DEFAULT_SYNC_TOMBSTONES: {
@@ -94,6 +105,8 @@
         DEFAULT_NUTSTORE_REMOTE_FILE_NAME: 'full-backup.json',
         DEFAULT_NUTSTORE_REMOTE_PATH: 'CodeNote-Helper/backups/full-backup.json',
         NUTSTORE_BASE_URL: 'https://dav.jianguoyun.com/dav/',
+        GOOGLE_DRIVE_SCOPE: 'https://www.googleapis.com/auth/drive.appdata',
+        GOOGLE_DRIVE_DEFAULT_FILE_NAME: 'code-note-helper-full-backup.json',
         PAGE_SIZE: 5
     };
 })();

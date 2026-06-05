@@ -51,6 +51,10 @@
             ...helpers.cloneValue(DEFAULT_SYNC_SETTINGS.webdav),
             ...((settings && settings.webdav) || {})
         };
+        const googleDrive = {
+            ...helpers.cloneValue(DEFAULT_SYNC_SETTINGS.googleDrive || {}),
+            ...((settings && settings.googleDrive) || {})
+        };
         const reviewFsrs = {
             ...reviewFsrsDefault,
             ...((settings && settings.reviewFsrs) || {}),
@@ -85,6 +89,11 @@
                 appPassword: String(webdav.appPassword || '').trim(),
                 baseUrl: helpers.normalizeBaseUrl(webdav.baseUrl),
                 remotePath: helpers.sanitizeRemotePath(webdav.remotePath)
+            },
+            googleDrive: {
+                ...googleDrive,
+                enabled: Boolean(googleDrive.enabled),
+                fileName: String(googleDrive.fileName || DEFAULT_SYNC_SETTINGS.googleDrive.fileName || 'code-note-helper-full-backup.json').trim()
             }
         };
     }
@@ -100,16 +109,24 @@
             ...helpers.cloneValue(DEFAULT_SYNC_META.lastSyncAt),
             ...((meta && meta.lastSyncAt) || {})
         };
+        normalized.lastSyncAt.googleDrive = normalized.lastSyncAt.googleDrive || null;
         normalized.lastError = {
             ...helpers.cloneValue(DEFAULT_SYNC_META.lastError),
             ...((meta && meta.lastError) || {})
         };
+        normalized.lastError.googleDrive = normalized.lastError.googleDrive || null;
         normalized.lastStatus = {
             webdav: {
                 state: null,
                 message: '',
                 at: null,
                 ...((((meta || {}).lastStatus || {}).webdav) || {})
+            },
+            googleDrive: {
+                state: null,
+                message: '',
+                at: null,
+                ...((((meta || {}).lastStatus || {}).googleDrive) || {})
             }
         };
         return normalized;
@@ -153,9 +170,15 @@
         return Boolean(normalized.webdav.email && normalized.webdav.appPassword);
     }
 
+    function isGoogleDriveConfigComplete(settings) {
+        const normalized = normalizeSyncSettings(settings);
+        if (!normalized.googleDrive.enabled) return true;
+        return true;
+    }
+
     function isAnySyncEnabled(settings) {
         const normalized = normalizeSyncSettings(settings);
-        return Boolean(normalized.webdav.enabled);
+        return Boolean(normalized.webdav.enabled || normalized.googleDrive.enabled);
     }
 
     function shouldShowSyncIndicator(source) {
@@ -163,7 +186,10 @@
         const webdavEnabled = source.webdav && typeof source.webdav === 'object'
             ? Boolean(source.webdav.enabled)
             : Boolean(source.webdavEnabled);
-        return webdavEnabled;
+        const googleDriveEnabled = source.googleDrive && typeof source.googleDrive === 'object'
+            ? Boolean(source.googleDrive.enabled)
+            : Boolean(source.googleDriveEnabled);
+        return Boolean(webdavEnabled || googleDriveEnabled);
     }
 
     function buildWebdavConfigWarning(settings) {
@@ -171,6 +197,13 @@
         if (!normalized.webdav.enabled) return '';
         if (isWebdavConfigComplete(normalized)) return '';
         return '坚果云已开启，但邮箱或应用密码未填写完整，请先到设置页补全。';
+    }
+
+    function buildGoogleDriveConfigWarning(settings) {
+        const normalized = normalizeSyncSettings(settings);
+        if (!normalized.googleDrive.enabled) return '';
+        if (isGoogleDriveConfigComplete(normalized)) return '';
+        return '';
     }
 
     async function setSyncSettings(nextSettings) {
@@ -311,6 +344,12 @@
         });
     }
 
+    function getProviderLabel(provider) {
+        if (provider === 'googleDrive') return 'Google Drive';
+        if (provider === 'webdav') return '坚果云';
+        return provider || '同步服务';
+    }
+
     function normalizeProviderError(provider, error) {
         const normalized = error instanceof Error ? error : new Error(String(error || '同步失败'));
         if (!normalized.provider) {
@@ -370,7 +409,7 @@
                     status: 'syncing',
                     reason: context.reason,
                     source: context.source,
-                    message: '坚果云临时失败，正在重试（' + attempt + '/' + (UNIFIED_SYNC_RETRY_MAX_ATTEMPTS - 1) + '）'
+                    message: getProviderLabel(provider) + '临时失败，正在重试（' + attempt + '/' + (UNIFIED_SYNC_RETRY_MAX_ATTEMPTS - 1) + '）'
                 });
                 await sleep(UNIFIED_SYNC_RETRY_DELAY_MS * attempt);
             }
@@ -404,8 +443,9 @@
         };
         const settings = await getSyncSettings();
         const webdavEnabled = Boolean(settings.webdav.enabled);
+        const googleDriveEnabled = Boolean(settings.googleDrive.enabled);
 
-        if (!webdavEnabled) {
+        if (!webdavEnabled && !googleDriveEnabled) {
             notifySyncListeners({
                 status: 'idle',
                 reason: config.reason,
@@ -444,40 +484,111 @@
                     enabled: webdavEnabled,
                     synced: false,
                     skipped: false
+                },
+                googleDrive: {
+                    enabled: googleDriveEnabled,
+                    synced: false,
+                    skipped: false
                 }
             }
         };
 
         try {
-            const warningMessage = buildWebdavConfigWarning(settings);
-            if (warningMessage) {
-                result.warning = true;
-                result.providers.webdav.skipped = true;
-                const warningError = new Error(warningMessage);
-                warningError.errorType = 'config-incomplete';
-                await markSyncError('webdav', warningError, warningMessage);
+            const failures = [];
+            const warnings = [];
+            let successCount = 0;
+
+            if (webdavEnabled) {
+                const warningMessage = buildWebdavConfigWarning(settings);
+                if (warningMessage) {
+                    result.warning = true;
+                    result.providers.webdav.skipped = true;
+                    warnings.push(warningMessage);
+                    const warningError = new Error(warningMessage);
+                    warningError.errorType = 'config-incomplete';
+                    await markSyncError('webdav', warningError, warningMessage);
+                } else {
+                    try {
+                        const webdavResult = await runProviderWithRetry('webdav', async () => {
+                            if (!modules.providers ||
+                                !modules.providers.webdav ||
+                                typeof modules.providers.webdav.backupToNutstore !== 'function') {
+                                const providerError = new Error('坚果云同步提供方未加载');
+                                providerError.provider = 'webdav';
+                                providerError.errorType = 'provider-missing';
+                                throw providerError;
+                            }
+                            return modules.providers.webdav.backupToNutstore();
+                        }, config);
+                        successCount += 1;
+                        result.providers.webdav.synced = true;
+                        result.providers.webdav.result = webdavResult || null;
+                    } catch (error) {
+                        await markSyncError('webdav', error, '坚果云同步失败');
+                        failures.push(error);
+                    }
+                }
+            }
+
+            if (googleDriveEnabled) {
+                const warningMessage = buildGoogleDriveConfigWarning(settings);
+                if (warningMessage) {
+                    result.warning = true;
+                    result.providers.googleDrive.skipped = true;
+                    warnings.push(warningMessage);
+                    const warningError = new Error(warningMessage);
+                    warningError.errorType = 'config-incomplete';
+                    await markSyncError('googleDrive', warningError, warningMessage);
+                } else {
+                    try {
+                        const googleDriveResult = await runProviderWithRetry('googleDrive', async () => {
+                            if (!modules.providers ||
+                                !modules.providers.googleDrive ||
+                                typeof modules.providers.googleDrive.backupToGoogleDrive !== 'function') {
+                                const providerError = new Error('Google Drive 同步提供方未加载');
+                                providerError.provider = 'googleDrive';
+                                providerError.errorType = 'provider-missing';
+                                throw providerError;
+                            }
+                            return modules.providers.googleDrive.backupToGoogleDrive({
+                                interactive: config.source === 'options-google-drive' || config.source === 'manual'
+                            });
+                        }, config);
+                        successCount += 1;
+                        result.providers.googleDrive.synced = true;
+                        result.providers.googleDrive.result = googleDriveResult || null;
+                    } catch (error) {
+                        await markSyncError('googleDrive', error, 'Google Drive 同步失败');
+                        failures.push(error);
+                    }
+                }
+            }
+
+            if (successCount === 0 && warnings.length && !failures.length) {
                 notifySyncListeners({
                     status: 'warning',
                     reason: config.reason,
                     source: config.source,
-                    message: warningMessage
+                    message: warnings[0]
                 });
                 return result;
             }
 
-            const webdavResult = await runProviderWithRetry('webdav', async () => {
-                if (!modules.providers ||
-                    !modules.providers.webdav ||
-                    typeof modules.providers.webdav.backupToNutstore !== 'function') {
-                    const providerError = new Error('坚果云同步提供方未加载');
-                    providerError.provider = 'webdav';
-                    providerError.errorType = 'provider-missing';
-                    throw providerError;
-                }
-                return modules.providers.webdav.backupToNutstore();
-            }, config);
-            result.providers.webdav.synced = true;
-            result.providers.webdav.result = webdavResult || null;
+            if (successCount === 0 && failures.length) {
+                throw failures[0];
+            }
+
+            if (failures.length || warnings.length) {
+                result.warning = true;
+                result.error = failures[0] && failures[0].message ? failures[0].message : '';
+                notifySyncListeners({
+                    status: 'warning',
+                    reason: config.reason,
+                    source: config.source,
+                    message: '部分同步完成，请检查设置页的最近状态'
+                });
+                return result;
+            }
 
             notifySyncListeners({
                 status: 'success',
@@ -487,8 +598,6 @@
             });
             return result;
         } catch (error) {
-            await markSyncError('webdav', error, '坚果云同步失败');
-
             notifySyncListeners({
                 status: 'error',
                 reason: config.reason,
@@ -497,12 +606,8 @@
                 error: error && error.message ? error.message : String(error || '')
             });
             if (config.silent) {
-                return {
-                    enabled: true,
-                    error: error && error.message ? error.message : String(error || '同步失败'),
-                    reason: config.reason,
-                    source: config.source
-                };
+                result.error = error && error.message ? error.message : String(error || '同步失败');
+                return result;
             }
             throw error;
         } finally {
@@ -795,6 +900,8 @@
         const timelineEnabled = await getTimelineEnabled();
         const webdavConfigComplete = isWebdavConfigComplete(settings);
         const webdavConfigWarning = buildWebdavConfigWarning(settings);
+        const googleDriveConfigComplete = isGoogleDriveConfigComplete(settings);
+        const googleDriveConfigWarning = buildGoogleDriveConfigWarning(settings);
 
         return {
             localLabel: '当前浏览器',
@@ -810,8 +917,16 @@
             webdavLastSyncAt: meta.lastSyncAt.webdav,
             webdavLastError: meta.lastError.webdav,
             webdavLastStatus: meta.lastStatus.webdav,
+            googleDriveEnabled: settings.googleDrive.enabled,
+            googleDriveConfigComplete,
+            googleDriveConfigWarning,
+            googleDriveFileName: settings.googleDrive.fileName,
+            googleDriveLastSyncAt: meta.lastSyncAt.googleDrive,
+            googleDriveLastError: meta.lastError.googleDrive,
+            googleDriveLastStatus: meta.lastStatus.googleDrive,
             syncIndicatorVisible: shouldShowSyncIndicator({
-                webdavEnabled: settings.webdav.enabled
+                webdavEnabled: settings.webdav.enabled,
+                googleDriveEnabled: settings.googleDrive.enabled
             })
         };
     }
@@ -831,9 +946,11 @@
         writeLocalNamespace,
         writeLocalMultiple,
         isWebdavConfigComplete,
+        isGoogleDriveConfigComplete,
         isAnySyncEnabled,
         shouldShowSyncIndicator,
         buildWebdavConfigWarning,
+        buildGoogleDriveConfigWarning,
         getTimelineEnabled,
         setTimelineEnabled,
         addSyncListener,
