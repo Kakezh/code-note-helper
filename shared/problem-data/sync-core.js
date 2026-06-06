@@ -382,6 +382,9 @@
         const nonRetryableErrorTypes = new Set([
             'config-incomplete',
             'auth',
+            'auth-required',
+            'auth_config',
+            'permission_denied',
             'validation',
             'provider-missing'
         ]);
@@ -563,14 +566,20 @@
                                 throw providerError;
                             }
                             return modules.providers.googleDrive.backupToGoogleDrive({
-                                interactive: config.source === 'options-google-drive' || config.source === 'manual'
+                                interactive: config.source === 'options-google-drive' ||
+                                    config.source === 'manual' ||
+                                    config.source === 'popup-indicator'
                             });
                         }, config);
                         successCount += 1;
                         result.providers.googleDrive.synced = true;
                         result.providers.googleDrive.result = googleDriveResult || null;
                     } catch (error) {
-                        await markSyncError('googleDrive', error, 'Google Drive 同步失败');
+                        await markSyncError(
+                            'googleDrive',
+                            error,
+                            error && error.message ? error.message : 'Google Drive 同步失败'
+                        );
                         failures.push(error);
                     }
                 }

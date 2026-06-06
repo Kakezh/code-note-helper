@@ -672,7 +672,7 @@
                     setBusy(elements.btnBackupGoogleDrive, true);
                     await saveSyncSettings();
                     await store.backupToGoogleDrive({
-                        interactive: false
+                        interactive: true
                     });
                     await loadSyncSection();
                     showToast('完整备份已上传到 Google Drive 的可见备份文件夹');
