@@ -1,6 +1,6 @@
 ﻿/**
  * LeetCode prompt 生成器
- * 版本：1.0.81
+ * 版本：1.1.4
  */
 
 (function () {
@@ -139,15 +139,30 @@ function detectCodeLanguage(code) {
         ].join('\n');
     }
 
-    function detectLingShenSolution(officialSolution) {
-        if (!officialSolution || typeof officialSolution !== 'string') return false;
+    function normalizeRecommendedSolution(recommendedSolution) {
+        if (!recommendedSolution || typeof recommendedSolution !== 'object') return null;
+        const label = String(recommendedSolution.label || '').trim();
+        const title = String(recommendedSolution.title || '').trim();
+        const author = String(recommendedSolution.author || '').trim();
+        if (!label && !title && !author) return null;
+        return {
+            label: label || '选中的题解',
+            title,
+            author
+        };
+    }
 
-        const helper = getRecommendationHelper();
-        if (helper && typeof helper.hasLingShenSolutionInText === 'function') {
-            return helper.hasLingShenSolutionInText(officialSolution);
+    function buildSelectedRecommendationPrompt(recommendedSolution) {
+        const normalized = normalizeRecommendedSolution(recommendedSolution);
+        if (!normalized) return '';
+        const parts = [normalized.label];
+        if (normalized.title) {
+            parts.push(`《${normalized.title}》`);
         }
-
-        return /endlesscheng|灵茶山艾府|灵神/i.test(officialSolution);
+        if (normalized.author) {
+            parts.push(`，作者 @${normalized.author}`);
+        }
+        return `用户已选择 ${parts.join('')} 作为推荐题解。推荐方案必须优先采用这篇题解的核心思路；其他题解只用于对比、补充或说明取舍。`;
     }
 
     function filterSolutionByLanguage(content, targetLang) {
@@ -328,7 +343,7 @@ ${mustIncludeCode
     // === 完整的 Prompt 生成（包含所有约束） ===
 
     function generatePrompt(data) {
-        const { noteTitle, problem, myCode, officialSolution, headingLevel, userLevel, notes, url, noteMode } = data;
+        const { noteTitle, problem, myCode, officialSolution, headingLevel, userLevel, notes, url, noteMode, recommendedSolution } = data;
 
         if (noteMode === 'qa_only') {
             return generateQaOnlyPrompt(data);
@@ -388,11 +403,8 @@ ${mustIncludeCode
 
         // 综合判定：多个独立题解 或 单题解内多方法 都视为"多题解情况"
         const hasMultipleSolutions = hasMultipleDistinctSolutions || hasMultipleMethodsInSingleSolution;
-        const hasLingShenSolution = detectLingShenSolution(officialSolution);
         const recommendationExplainPrompt = buildRecommendationExplainPrompt(userLevel);
-        if (hasLingShenSolution) {
-            console.log('[CodeNote Helper] 检测到灵神题解，推荐方案将强制指向灵神');
-        }
+        const selectedRecommendationPrompt = buildSelectedRecommendationPrompt(recommendedSolution);
 
         // 用户水平详细说明映射
         const levelDescMap = {
@@ -490,7 +502,7 @@ ${h3} 方案对比（必须包含作者列）
 [对比各个方案的优劣，确保涵盖所有提供的题解]
 
 ${h3} 推荐方案
-${hasLingShenSolution ? '**🚨 灵神优先强制规则：已检测到 @endlesscheng（灵茶山艾府/灵神）题解，推荐方案必须选择该作者。**' : ''}
+${selectedRecommendationPrompt ? `**用户已选择推荐题解：${selectedRecommendationPrompt}**` : ''}
 \`\`\`python
 # ===== 推荐方案（来自 @作者名）=====
 # 【整体思路】：在此简要描述算法的核心思想
@@ -570,7 +582,7 @@ ${recommendationExplainPrompt}
 - 强制篇幅：该小节总字数不少于 220 字，且至少 4 个要点
 - 违规处理：若缺失该小节或位置错误，视为本次输出不合格，必须完整重写
 
-${hasLingShenSolution ? '**🚨 灵神优先强制规则：已检测到 @endlesscheng（灵茶山艾府/灵神）题解，推荐方案必须选择该作者。**' : ''}
+${selectedRecommendationPrompt ? `**用户已选择推荐题解：${selectedRecommendationPrompt}**` : ''}
 
 \`\`\`python
 # ===== 优化题解（来自 @作者名）=====
@@ -669,7 +681,7 @@ ${officialSolution}
    （确保表格**涵盖所有提供的题解**，绝不遗漏，并在“作者”列明确标注原作者名）
 3. **【详细解析推荐方案】**：综合考虑面试适用性，选出一个最优方案作为“推荐方案”。
 4. **【列举其他可行方案】**：将其他方案作为“其他可行方案”列出，并确保**每个方案都包含完整代码**。
-${hasLingShenSolution ? '5. **【灵神优先强制规则】**：已检测到 @endlesscheng（灵茶山艾府/灵神）题解，"推荐方案"必须选择该作者方案。' : ''}
+${selectedRecommendationPrompt ? `5. **【用户已选择推荐题解】**：${selectedRecommendationPrompt}` : ''}
 `;
             } else {
                 prompt += `### 【参考题解】
@@ -748,7 +760,7 @@ ${notes}
    - “核心思路”与“关键语句/数据结构作用”必须详细展开；“适用场景”可简洁描述，不要求解释未被推荐理由
    - 若缺失、错位、编号不一致或出现统一讲解，视为整份答案不合格并重写
 11. **【强制要求】若“我的疑问/体会”非空，必须逐字原样输出用户原文；未原文输出视为失败并重写。**
-${hasLingShenSolution ? `12. **【强制要求】已检测到灵茶山艾府(灵神)题解，推荐方案必须来自 @endlesscheng（灵茶山艾府/灵神）。**` : ''}
+${selectedRecommendationPrompt ? `12. **【强制要求】${selectedRecommendationPrompt}**` : ''}
 
 ## 🚨🚨🚨 关于参考题解的【最高优先级】强制约束 🚨🚨🚨
 
@@ -924,9 +936,9 @@ ${hasMultipleSolutions ? `6. **【强制要求】多个参考题解时：**
    - **推荐题解详细讲解必须严格长于任一非推荐讲解**，且推荐讲解字数不得低于 360 字
    - 若出现缺失、错位、编号不一致或统一讲解，视为整份答案不合格并重写
    - 禁止使用"代码类似"、"思路同上"等省略表述` : ''}
-${hasLingShenSolution ? `7. **【强制要求】灵神题解优先：**
-   - 已检测到 @endlesscheng（灵茶山艾府/灵神）题解时，推荐方案必须来自该作者
-   - 其他作者方案仅允许放入“其他可行方案”用于补充对比` : ''}
+${selectedRecommendationPrompt ? `7. **【强制要求】用户已选择推荐题解：**
+   - ${selectedRecommendationPrompt}
+   - 不要因为题解中出现其他作者或更高点赞数，就改选其他方案作为推荐方案` : ''}
 8. **【强制要求】推荐题解详细讲解小节不可省略：**
    - 必须紧跟在推荐方案/优化题解代码块后立即输出
    - 必须是独立标题小节，包含实质分析，不得只有模板句或占位语

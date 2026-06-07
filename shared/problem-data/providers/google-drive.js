@@ -1,6 +1,6 @@
 /**
  * Google Drive 同步提供方
- * 版本：1.1.3
+ * 版本：1.1.4
  */
 
 (function () {
@@ -27,6 +27,62 @@
     function getErrorMessage(error, fallback = '未知错误') {
         if (!error) return fallback;
         return String(error.message || error || fallback).trim() || fallback;
+    }
+
+    function normalizeGoogleDriveAuthError(error, fallback = 'Google Drive 授权失败') {
+        const rawMessage = getErrorMessage(error, fallback);
+        const lowerMessage = rawMessage.toLowerCase();
+        const rawErrorType = String(error && error.errorType || '').toLowerCase();
+
+        if (rawErrorType === 'permission_denied' ||
+            lowerMessage.includes('user did not approve') ||
+            lowerMessage.includes('access_denied')) {
+            return {
+                message: '你取消了 Google Drive 授权，备份不会上传。需要备份时，请重新点击“登录并测试”或“立即备份到 Google Drive”。',
+                errorType: 'permission_denied'
+            };
+        }
+        if (lowerMessage.includes('redirect_uri_mismatch') ||
+            lowerMessage.includes('invalid_client') ||
+            lowerMessage.includes('origin_mismatch')) {
+            return {
+                message: 'Google Drive 授权配置与当前扩展不匹配。请核对 Client ID 和重定向 URI 后，再回到设置页重新登录。',
+                errorType: 'auth_config'
+            };
+        }
+        if (rawErrorType === 'auth-required') {
+            return {
+                message: 'Google Drive 需要重新登录。请到设置页点击“登录并测试”，或手动点击“立即备份到 Google Drive”完成授权。',
+                errorType: 'auth-required'
+            };
+        }
+        if (lowerMessage.includes('login_required') ||
+            lowerMessage.includes('interaction_required') ||
+            lowerMessage.includes('consent_required')) {
+            return {
+                message: 'Google Drive 需要重新登录。请到设置页点击“登录并测试”，或手动点击“立即备份到 Google Drive”完成授权。',
+                errorType: 'auth-required'
+            };
+        }
+        if (rawErrorType === 'auth' || error && (error.status === 401 || error.status === 403)) {
+            return {
+                message: 'Google Drive 授权已失效。请重新登录后再备份。',
+                errorType: 'auth'
+            };
+        }
+        return {
+            message: rawMessage,
+            errorType: error && error.errorType || 'google-drive'
+        };
+    }
+
+    function isGoogleDriveAuthError(error) {
+        const errorType = String(error && error.errorType || '').toLowerCase();
+        return errorType === 'auth' ||
+            errorType === 'auth-required' ||
+            errorType === 'permission_denied' ||
+            errorType === 'auth_config' ||
+            error && (error.status === 401 || error.status === 403);
     }
 
     async function sendRuntimeMessage(type, payload = {}) {
@@ -137,29 +193,23 @@
             return cached.accessToken;
         }
 
-        if (!config.interactive) {
-            throw createGoogleDriveError('Google Drive 需要重新登录，请到设置页点击“登录并测试”', {
-                stage: 'auth',
-                errorType: 'auth-required'
-            });
-        }
-
         let authResult;
         try {
             authResult = await sendRuntimeMessage('GOOGLE_DRIVE_AUTHORIZE', {
-                interactive: true,
+                interactive: config.interactive === true,
                 clientId: settings.clientId,
                 scope: DRIVE_SCOPE
             });
         } catch (error) {
-            throw createGoogleDriveError(`Google Drive 授权失败：${getErrorMessage(error)}`, {
+            const normalized = normalizeGoogleDriveAuthError(error);
+            throw createGoogleDriveError(normalized.message, {
                 stage: 'auth',
-                errorType: 'auth'
+                errorType: normalized.errorType
             });
         }
 
         if (!authResult || !authResult.accessToken) {
-            throw createGoogleDriveError('Google Drive 授权未完成，请稍后重试', {
+            throw createGoogleDriveError('Google Drive 授权没有完成。请在弹出的登录页面中确认授权后再重试。', {
                 stage: 'auth',
                 errorType: 'auth'
             });
@@ -212,6 +262,54 @@
         }
 
         return response;
+    }
+
+    async function runGoogleDriveBackup(accessToken, settings, jsonText) {
+        const folder = await ensureBackupFolder(accessToken, settings.folderName);
+        if (!folder || !folder.id) {
+            throw createGoogleDriveError('Google Drive 备份文件夹创建失败，请稍后重试', {
+                stage: 'folder',
+                errorType: 'remote-folder'
+            });
+        }
+        const existingFile = await findBackupFile(accessToken, folder.id, settings.fileName);
+
+        let response;
+        if (existingFile && existingFile.id) {
+            response = await requestGoogleDrive(accessToken, {
+                method: 'PATCH',
+                url: `${DRIVE_UPLOAD_BASE}/files/${encodeURIComponent(existingFile.id)}?uploadType=media&fields=id,name,modifiedTime,size`,
+                headers: {
+                    'Content-Type': 'application/json; charset=utf-8'
+                },
+                body: jsonText,
+                acceptStatuses: [200]
+            });
+        } else {
+            const multipart = createMultipartBody({
+                name: settings.fileName,
+                mimeType: 'application/json',
+                parents: [folder.id],
+                appProperties: {
+                    codenoteHelper: 'full-backup'
+                }
+            }, jsonText);
+            response = await requestGoogleDrive(accessToken, {
+                method: 'POST',
+                url: `${DRIVE_UPLOAD_BASE}/files?uploadType=multipart&fields=id,name,modifiedTime,size`,
+                headers: {
+                    'Content-Type': multipart.contentType
+                },
+                body: multipart.body,
+                acceptStatuses: [200, 201]
+            });
+        }
+
+        return {
+            folder,
+            existingFile,
+            response
+        };
     }
 
     function escapeDriveQueryValue(value) {
@@ -314,7 +412,9 @@
             const settings = await getGoogleDriveSettings();
             const folder = await findBackupFolder(accessToken, settings.folderName);
             const file = folder && folder.id ? await findBackupFile(accessToken, folder.id, settings.fileName) : null;
-            await syncCore.markSyncSuccess('googleDrive', 'Google Drive 授权可用');
+            await syncCore.markSyncSuccess('googleDrive', 'Google Drive 授权可用', {
+                markRevisionSynced: false
+            });
             return {
                 success: true,
                 folderName: settings.folderName,
@@ -338,65 +438,45 @@
 
     async function backupToGoogleDrive(options = {}) {
         try {
-            const accessToken = await ensureAccessToken({
+            let accessToken = await ensureAccessToken({
                 interactive: options.interactive === true
             });
             const settings = await getGoogleDriveSettings();
             const snapshot = await syncCore.buildFullSnapshot();
             const jsonText = JSON.stringify(snapshot, null, 2);
-            const folder = await ensureBackupFolder(accessToken, settings.folderName);
-            if (!folder || !folder.id) {
-                throw createGoogleDriveError('Google Drive 备份文件夹创建失败，请稍后重试', {
-                    stage: 'folder',
-                    errorType: 'remote-folder'
+            let backupResult;
+            try {
+                backupResult = await runGoogleDriveBackup(accessToken, settings, jsonText);
+            } catch (error) {
+                if (!(options.interactive === true && isGoogleDriveAuthError(error))) {
+                    throw error;
+                }
+                await writeCachedToken(null);
+                accessToken = await ensureAccessToken({
+                    interactive: true
                 });
-            }
-            const existingFile = await findBackupFile(accessToken, folder.id, settings.fileName);
-
-            let response;
-            if (existingFile && existingFile.id) {
-                response = await requestGoogleDrive(accessToken, {
-                    method: 'PATCH',
-                    url: `${DRIVE_UPLOAD_BASE}/files/${encodeURIComponent(existingFile.id)}?uploadType=media&fields=id,name,modifiedTime,size`,
-                    headers: {
-                        'Content-Type': 'application/json; charset=utf-8'
-                    },
-                    body: jsonText,
-                    acceptStatuses: [200]
-                });
-            } else {
-                const multipart = createMultipartBody({
-                    name: settings.fileName,
-                    mimeType: 'application/json',
-                    parents: [folder.id],
-                    appProperties: {
-                        codenoteHelper: 'full-backup'
-                    }
-                }, jsonText);
-                response = await requestGoogleDrive(accessToken, {
-                    method: 'POST',
-                    url: `${DRIVE_UPLOAD_BASE}/files?uploadType=multipart&fields=id,name,modifiedTime,size`,
-                    headers: {
-                        'Content-Type': multipart.contentType
-                    },
-                    body: multipart.body,
-                    acceptStatuses: [200, 201]
-                });
+                backupResult = await runGoogleDriveBackup(accessToken, settings, jsonText);
             }
 
             await syncCore.markSyncSuccess('googleDrive', 'Google Drive 备份成功');
             return {
                 success: true,
                 folderName: settings.folderName,
-                folderId: folder.id,
+                folderId: backupResult.folder.id,
                 fileName: settings.fileName,
-                fileId: response.data && response.data.id || existingFile && existingFile.id || '',
-                updated: Boolean(existingFile && existingFile.id)
+                fileId: backupResult.response.data && backupResult.response.data.id || backupResult.existingFile && backupResult.existingFile.id || '',
+                updated: Boolean(backupResult.existingFile && backupResult.existingFile.id)
             };
         } catch (error) {
-            const stageError = createGoogleDriveError(`上传失败：${getErrorMessage(error, '上传备份文件失败')}`, {
+            const normalized = isGoogleDriveAuthError(error)
+                ? normalizeGoogleDriveAuthError(error, 'Google Drive 授权失败')
+                : {
+                    message: `上传失败：${getErrorMessage(error, '上传备份文件失败')}`,
+                    errorType: error && error.errorType || 'google-drive'
+                };
+            const stageError = createGoogleDriveError(normalized.message, {
                 stage: error && error.stage || 'upload',
-                errorType: error && error.errorType || 'google-drive',
+                errorType: normalized.errorType,
                 status: error && error.status,
                 originalError: error || null
             });

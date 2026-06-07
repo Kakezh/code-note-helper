@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "CodeNote Helper",
-  "version": "1.1.3",
+  "version": "1.1.4",
   "description": "算法刷题笔记 + 间隔复习 + 深度学习复盘 + AI 对话时间轴 — 让刷过的每道题成为长期记忆",
   "author": "cao",
   "icons": {
@@ -12,6 +12,7 @@
   },
   "permissions": [
     "storage",
+    "alarms",
     "activeTab",
     "scripting",
     "clipboardWrite"
@@ -40,8 +41,7 @@
     "identity"
   ],
   "background": {
-    "service_worker": "service-worker.js",
-    "type": "module"
+    "service_worker": "service-worker.js"
   },
   "content_scripts": [
     {

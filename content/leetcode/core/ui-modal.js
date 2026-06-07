@@ -1,6 +1,6 @@
 ﻿/**
  * LeetCode 笔记助手 UI 模块
- * 版本：1.1.3
+ * 版本：1.1.4
  */
 
 (function () {
@@ -36,10 +36,15 @@
     let submissionObserver = null;
     let submissionRouteHooked = false;
     let submitIntentCaptureBound = false;
+    let recommendationEntrySeq = 0;
     const trackedSubmissionCache = new Set();
     const trackingSubmissionInFlight = new Set();
     const submitIntentMemoryCache = new Map();
     let reviewReminderTimer = null;
+    let recommendationSelectionState = {
+        entries: [],
+        selectedId: ''
+    };
 
     const ICON_DRAG_LONG_PRESS_MS = 500;
     const ICON_DRAG_MOVE_THRESHOLD_PX = 12;
@@ -96,6 +101,207 @@
             return;
         }
         console.info(`[CodeNote Helper] ${message}`);
+    }
+
+    function resetRecommendationSelectionState() {
+        recommendationEntrySeq = 0;
+        recommendationSelectionState = {
+            entries: [],
+            selectedId: ''
+        };
+        renderRecommendationSelector();
+    }
+
+    function normalizeRecommendationAuthor(author) {
+        const rawAuthor = String(author || '').trim() || '未知作者';
+        if (rawAuthor.toLowerCase() === 'endlesscheng') {
+            return '灵茶山艾府(灵神)';
+        }
+        if (rawAuthor.toLowerCase() === 'leetcode-solution') {
+            return 'LeetCode 官方题解';
+        }
+        return rawAuthor;
+    }
+
+    function escapeRecommendationHtml(value) {
+        return String(value || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    function createRecommendationEntryId(prefix) {
+        recommendationEntrySeq += 1;
+        return `${prefix || 'solution'}-${recommendationEntrySeq}`;
+    }
+
+    function buildRecommendationEntryFromSolution(solution, index, options = {}) {
+        if (!solution) return null;
+        const promptGenerator = window.PromptGenerator;
+        const isCustom = Boolean(options.isCustom);
+        const sequence = isCustom
+            ? (solution._customIndex || index + 1)
+            : (index + 1);
+        const label = isCustom ? `自定义题解 ${sequence}` : `题解 ${sequence}`;
+        const title = String(solution.title || label).trim() || label;
+        const author = normalizeRecommendationAuthor(solution.author);
+        const upvoteInfo = solution.upvoteCount ? ` | 👍 ${solution.upvoteCount} 赞` : '';
+        let content = solution.content || '';
+        if (options.userLanguage &&
+            promptGenerator &&
+            typeof promptGenerator.filterSolutionByLanguage === 'function') {
+            content = promptGenerator.filterSolutionByLanguage(content, options.userLanguage);
+        }
+        const marker = `📝 【${label}】 ${title}`;
+        const formattedText = `
+═══════════════════════════════════════════════════════════════
+${marker}
+👤 作者：@${author}${upvoteInfo}
+═══════════════════════════════════════════════════════════════
+
+${content}`;
+
+        return {
+            id: createRecommendationEntryId(isCustom ? 'custom' : 'solution'),
+            label,
+            title,
+            author,
+            marker,
+            formattedText,
+            optionText: `${label}：${title}（${author}）`
+        };
+    }
+
+    function buildRecommendationEntryFromText(text, label) {
+        const normalizedText = String(text || '').trim();
+        if (!normalizedText) return null;
+        return {
+            id: createRecommendationEntryId('text'),
+            label: label || '页面参考答案',
+            title: label || '页面参考答案',
+            author: '',
+            marker: '',
+            formattedText: normalizedText,
+            optionText: label || '页面参考答案'
+        };
+    }
+
+    function renderRecommendationSelector(options = {}) {
+        const group = document.getElementById('p-recommendation-group');
+        const select = document.getElementById('p-recommendation-select');
+        const hint = document.getElementById('p-recommendation-hint');
+        if (!group || !select) return;
+
+        const entries = Array.isArray(recommendationSelectionState.entries)
+            ? recommendationSelectionState.entries
+            : [];
+        if (!entries.length) {
+            group.style.display = 'none';
+            select.innerHTML = '';
+            if (hint) {
+                hint.textContent = '';
+            }
+            return;
+        }
+
+        group.style.display = 'block';
+        const selectedId = entries.some((entry) => entry.id === recommendationSelectionState.selectedId)
+            ? recommendationSelectionState.selectedId
+            : '';
+        recommendationSelectionState.selectedId = selectedId;
+        select.innerHTML = [
+            '<option value="">不指定推荐题解</option>',
+            ...entries.map((entry) => `<option value="${escapeRecommendationHtml(entry.id)}">${escapeRecommendationHtml(entry.optionText)}</option>`)
+        ].join('');
+        select.value = selectedId;
+        if (hint) {
+            hint.textContent = selectedId
+                ? '生成笔记时会优先讲解你选择的这一篇。'
+                : '当前未指定推荐题解，AI 会根据参考答案自行选择。';
+        }
+        if (options.focus) {
+            select.focus();
+        }
+    }
+
+    function setRecommendationEntries(entries, options = {}) {
+        const nextEntries = Array.isArray(entries) ? entries.filter(Boolean) : [];
+        const nextSelectedId = options.preserveSelection
+            ? recommendationSelectionState.selectedId
+            : (options.selectedId || (nextEntries[0] && nextEntries[0].id) || '');
+        recommendationSelectionState = {
+            entries: nextEntries,
+            selectedId: nextEntries.some((entry) => entry.id === nextSelectedId) ? nextSelectedId : ''
+        };
+        if (options.updateTextarea) {
+            const textarea = document.getElementById('p-official');
+            if (textarea) {
+                textarea.value = nextEntries.map((entry) => entry.formattedText).join('\n\n');
+            }
+        }
+        renderRecommendationSelector(options);
+    }
+
+    function appendRecommendationEntries(entries, options = {}) {
+        const nextEntries = Array.isArray(entries) ? entries.filter(Boolean) : [];
+        if (!nextEntries.length) return;
+        recommendationSelectionState.entries = [
+            ...(recommendationSelectionState.entries || []),
+            ...nextEntries
+        ];
+        if (options.updateTextarea) {
+            const textarea = document.getElementById('p-official');
+            if (textarea) {
+                const currentContent = textarea.value || '';
+                const appendedContent = nextEntries.map((entry) => entry.formattedText).join('\n\n');
+                textarea.value = currentContent.trim()
+                    ? `${currentContent}\n\n${appendedContent}`
+                    : appendedContent;
+            }
+        }
+        renderRecommendationSelector(options);
+    }
+
+    function syncRecommendationEntriesFromTextarea(options = {}) {
+        const textarea = document.getElementById('p-official');
+        const text = textarea ? textarea.value : '';
+        if (!String(text || '').trim()) {
+            resetRecommendationSelectionState();
+            return;
+        }
+
+        const beforeSelectedId = recommendationSelectionState.selectedId;
+        const beforeCount = (recommendationSelectionState.entries || []).length;
+        const nextEntries = (recommendationSelectionState.entries || []).filter((entry) => {
+            if (!entry.marker) return true;
+            return String(text).includes(entry.marker);
+        });
+        if (nextEntries.length === beforeCount) return;
+
+        const selectedStillExists = nextEntries.some((entry) => entry.id === beforeSelectedId);
+        recommendationSelectionState = {
+            entries: nextEntries,
+            selectedId: selectedStillExists ? beforeSelectedId : ''
+        };
+        renderRecommendationSelector({
+            focus: Boolean(options.focusWhenSelectedRemoved && beforeSelectedId && !selectedStillExists && nextEntries.length)
+        });
+        if (options.notifyWhenSelectedRemoved && beforeSelectedId && !selectedStillExists && nextEntries.length) {
+            showToast('已删除当前推荐题解，请重新选择推荐题解', 3200);
+        }
+    }
+
+    function getSelectedRecommendationForPrompt() {
+        syncRecommendationEntriesFromTextarea();
+        const selectedId = recommendationSelectionState.selectedId;
+        const selectedEntry = (recommendationSelectionState.entries || []).find((entry) => entry.id === selectedId);
+        if (!selectedEntry) return null;
+        return {
+            label: selectedEntry.label,
+            title: selectedEntry.title,
+            author: selectedEntry.author
+        };
     }
 
     function setGeneratingState(generating) {
@@ -1482,6 +1688,12 @@
             <div style="font-size:12px;color:#666;margin-top:4px">💡 支持力扣中国站和美国站的题解链接，抓取后会追加到下方参考答案中</div>
         </div>
 
+        <div class="form-group" id="p-recommendation-group" style="display:none">
+            <label for="p-recommendation-select">推荐题解</label>
+            <select id="p-recommendation-select"></select>
+            <div id="p-recommendation-hint" style="font-size:12px;color:#666;margin-top:4px"></div>
+        </div>
+
         <div class="form-group">
             <label for="p-official">参考答案（可选）</label>
             <textarea id="p-official" rows="4" placeholder="如果留空，AI 会基于你的原题解生成优化方案。"></textarea>
@@ -1574,6 +1786,18 @@
         };
 
         document.getElementById('p-ai-platform').onchange = toggleApiSettings;
+        document.getElementById('p-recommendation-select').onchange = (event) => {
+            const value = event && event.target ? event.target.value : '';
+            const exists = (recommendationSelectionState.entries || []).some((entry) => entry.id === value);
+            recommendationSelectionState.selectedId = exists ? value : '';
+            renderRecommendationSelector();
+        };
+        document.getElementById('p-official').addEventListener('input', () => {
+            syncRecommendationEntriesFromTextarea({
+                notifyWhenSelectedRemoved: true,
+                focusWhenSelectedRemoved: true
+            });
+        });
 
         const openModal = async () => {
             cancelActiveGeneration({ showHint: false });
@@ -1588,6 +1812,7 @@
 
             modal.style.display = 'block';
             syncManualAddSection();
+            resetRecommendationSelectionState();
             document.getElementById('p-official').value = "⏳ 正在获取参考题解...";
 
             let contentText = "";
@@ -1671,13 +1896,21 @@
                             orderedSolutions = recommendationHelper.sortSolutionsForRecommendation(solutions);
                             if (typeof recommendationHelper.hasLingShenSolutionInList === 'function' &&
                                 recommendationHelper.hasLingShenSolutionInList(orderedSolutions)) {
-                                console.log('[CodeNote Helper] 命中灵神题解，已置顶用于推荐');
+                                console.log('[CodeNote Helper] 命中灵神题解，已加入推荐候选');
                             }
                         } else if (recommendationHelper) {
                             console.warn('[CodeNote Helper] Recommendation.sortSolutionsForRecommendation 不可用，保持原题解顺序');
                         }
 
-                        officialText = window.PromptGenerator.formatSolutionsForPrompt(orderedSolutions, userLanguage);
+                        const recommendationEntries = orderedSolutions.map((solution, index) =>
+                            buildRecommendationEntryFromSolution(solution, index, {
+                                userLanguage
+                            })
+                        );
+                        setRecommendationEntries(recommendationEntries, {
+                            updateTextarea: true
+                        });
+                        officialText = document.getElementById('p-official').value;
                         showToast(`✅ 成功获取 ${orderedSolutions.length} 个题解`, 2000);
                     } else {
                         officialText = "";
@@ -1699,10 +1932,21 @@
                     }
                 }
 
-                document.getElementById('p-official').value = officialText;
+                if (!(recommendationSelectionState.entries || []).length) {
+                    const textEntry = buildRecommendationEntryFromText(officialText, '页面参考答案');
+                    if (textEntry) {
+                        setRecommendationEntries([textEntry], {
+                            updateTextarea: true
+                        });
+                    } else {
+                        document.getElementById('p-official').value = officialText;
+                        renderRecommendationSelector();
+                    }
+                }
             } catch (e) {
                 console.error('获取题解失败:', e);
                 document.getElementById('p-official').value = "";
+                resetRecommendationSelectionState();
                 showToast("⚠️ 获取题解失败: " + e.message, 3000);
             }
 
@@ -1926,7 +2170,6 @@
                 }
                 const userLanguage = window.PromptGenerator.detectCodeLanguage(userCode);
 
-                const officialTextarea = document.getElementById('p-official');
                 let successCount = 0;
                 let allFormattedSolutions = [];
 
@@ -1951,39 +2194,21 @@
                         orderedSolutions = recommendationHelper.sortSolutionsForRecommendation(allFormattedSolutions);
                         if (typeof recommendationHelper.hasLingShenSolutionInList === 'function' &&
                             recommendationHelper.hasLingShenSolutionInList(orderedSolutions)) {
-                            console.log('[CodeNote Helper] 自定义题解命中灵神，已置顶用于推荐');
+                            console.log('[CodeNote Helper] 自定义题解命中灵神，已加入推荐候选');
                         }
                     } else if (recommendationHelper) {
                         console.warn('[CodeNote Helper] Recommendation.sortSolutionsForRecommendation 不可用，保持原题解顺序');
                     }
 
-                    const formattedContent = orderedSolutions.map(sol => {
-                        const upvoteInfo = sol.upvoteCount ? ` | 👍 ${sol.upvoteCount} 赞` : '';
-                        let authorTag = sol.author || '未知作者';
-                        if (authorTag.toLowerCase() === 'endlesscheng') {
-                            authorTag = '灵茶山艾府(灵神)';
-                        }
-
-                        let content = sol.content;
-                        if (userLanguage) {
-                            content = window.PromptGenerator.filterSolutionByLanguage(content, userLanguage);
-                        }
-
-                        return `
-═══════════════════════════════════════════════════════════════
-📝 【自定义题解 ${sol._customIndex}】 ${sol.title}
-👤 作者：@${authorTag}${upvoteInfo}
-═══════════════════════════════════════════════════════════════
-
-${content}`;
-                    }).join('\n\n');
-
-                    const currentContent = officialTextarea.value || '';
-                    if (currentContent.trim()) {
-                        officialTextarea.value = currentContent + '\n\n' + formattedContent;
-                    } else {
-                        officialTextarea.value = formattedContent;
-                    }
+                    const customEntries = orderedSolutions.map((solution, index) =>
+                        buildRecommendationEntryFromSolution(solution, index, {
+                            isCustom: true,
+                            userLanguage
+                        })
+                    );
+                    appendRecommendationEntries(customEntries, {
+                        updateTextarea: true
+                    });
 
                     showToast(`✅ 成功抓取 ${successCount} 个题解`);
                     document.getElementById('p-custom-url-1').value = '';
@@ -2034,6 +2259,7 @@ ${content}`;
                 problem: modal.dataset.rawProblem || "",
                 myCode: modal.dataset.rawCode || "",
                 officialSolution: official,
+                recommendedSolution: getSelectedRecommendationForPrompt(),
                 headingLevel,
                 userLevel,
                 noteMode,

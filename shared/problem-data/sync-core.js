@@ -1,6 +1,6 @@
 ﻿/**
  * 刷题记录同步核心
- * 版本：1.1.3
+ * 版本：1.1.4
  */
 
 (function () {
@@ -14,8 +14,10 @@
     const DEFAULT_SYNC_META = constants.DEFAULT_SYNC_META;
     const DEFAULT_SYNC_SETTINGS = constants.DEFAULT_SYNC_SETTINGS;
     const DEFAULT_SYNC_TOMBSTONES = constants.DEFAULT_SYNC_TOMBSTONES;
-    const UNIFIED_SYNC_DEBOUNCE_MS = 2000;
-    const UNIFIED_SYNC_INTERVAL_MS = 1 * 60 * 1000;
+    const UNIFIED_SYNC_INTERVAL_MS = Number(constants.SYNC_AUTO_INTERVAL_MS) > 0
+        ? Number(constants.SYNC_AUTO_INTERVAL_MS)
+        : 3 * 60 * 1000;
+    const UNIFIED_SYNC_DEBOUNCE_MS = UNIFIED_SYNC_INTERVAL_MS;
     const UNIFIED_SYNC_RETRY_MAX_ATTEMPTS = 3;
     const UNIFIED_SYNC_RETRY_DELAY_MS = 2000;
 
@@ -117,6 +119,10 @@
         };
         normalized.deviceId = normalized.deviceId || helpers.createDeviceId();
         normalized.localRevision = Number(normalized.localRevision || 0);
+        normalized.syncedRevision = {
+            webdav: Number((((meta || {}).syncedRevision || {}).webdav) || 0),
+            googleDrive: Number((((meta || {}).syncedRevision || {}).googleDrive) || 0)
+        };
         normalized.lastSyncAt = {
             ...helpers.cloneValue(DEFAULT_SYNC_META.lastSyncAt),
             ...((meta && meta.lastSyncAt) || {})
@@ -247,17 +253,33 @@
         return meta;
     }
 
-    async function markSyncSuccess(provider, message = '同步成功') {
+    async function markSyncSuccess(provider, message = '同步成功', options = {}) {
+        const config = {
+            markRevisionSynced: true,
+            ...(options || {})
+        };
         const meta = await getSyncMeta();
         const now = new Date().toISOString();
         meta.lastSyncAt[provider] = now;
         meta.lastError[provider] = null;
+        if (config.markRevisionSynced) {
+            meta.syncedRevision = meta.syncedRevision || {};
+            meta.syncedRevision[provider] = Number(meta.localRevision || 0);
+        }
         meta.lastStatus = meta.lastStatus || {};
         meta.lastStatus[provider] = {
             state: 'success',
             message,
             at: now
         };
+        await helpers.writeLocal(STORAGE_KEYS.syncMeta, meta);
+        return meta;
+    }
+
+    async function markProviderRevisionSynced(provider) {
+        const meta = await getSyncMeta();
+        meta.syncedRevision = meta.syncedRevision || {};
+        meta.syncedRevision[provider] = Number(meta.localRevision || 0);
         await helpers.writeLocal(STORAGE_KEYS.syncMeta, meta);
         return meta;
     }
@@ -449,6 +471,26 @@
         }, 0);
     }
 
+    function isManualSyncRequest(config) {
+        const source = String(config && config.source || '').trim();
+        const reason = String(config && config.reason || '').trim();
+        return Boolean(
+            config && config.force === true ||
+            source === 'manual' ||
+            source === 'options-google-drive' ||
+            source === 'popup-indicator' ||
+            reason === 'manual' ||
+            reason === 'popup-indicator-manual'
+        );
+    }
+
+    function shouldSkipProviderWithoutLocalChange(meta, provider, config) {
+        if (isManualSyncRequest(config)) return false;
+        const localRevision = Number(meta && meta.localRevision || 0);
+        const providerRevision = Number(meta && meta.syncedRevision && meta.syncedRevision[provider] || 0);
+        return localRevision <= providerRevision;
+    }
+
     async function runUnifiedSync(options) {
         const config = {
             silent: false,
@@ -459,6 +501,7 @@
         const settings = await getSyncSettings();
         const webdavEnabled = Boolean(settings.webdav.enabled);
         const googleDriveEnabled = Boolean(settings.googleDrive.enabled);
+        const meta = await getSyncMeta();
 
         if (!webdavEnabled && !googleDriveEnabled) {
             notifySyncListeners({
@@ -514,6 +557,10 @@
             let successCount = 0;
 
             if (webdavEnabled) {
+                if (shouldSkipProviderWithoutLocalChange(meta, 'webdav', config)) {
+                    result.providers.webdav.skipped = true;
+                    result.providers.webdav.skipReason = 'no-local-change';
+                } else {
                 const warningMessage = buildWebdavConfigWarning(settings);
                 if (warningMessage) {
                     result.warning = true;
@@ -535,6 +582,7 @@
                             }
                             return modules.providers.webdav.backupToNutstore();
                         }, config);
+                        await markProviderRevisionSynced('webdav');
                         successCount += 1;
                         result.providers.webdav.synced = true;
                         result.providers.webdav.result = webdavResult || null;
@@ -543,9 +591,14 @@
                         failures.push(error);
                     }
                 }
+                }
             }
 
             if (googleDriveEnabled) {
+                if (shouldSkipProviderWithoutLocalChange(meta, 'googleDrive', config)) {
+                    result.providers.googleDrive.skipped = true;
+                    result.providers.googleDrive.skipReason = 'no-local-change';
+                } else {
                 const warningMessage = buildGoogleDriveConfigWarning(settings);
                 if (warningMessage) {
                     result.warning = true;
@@ -571,6 +624,7 @@
                                     config.source === 'popup-indicator'
                             });
                         }, config);
+                        await markProviderRevisionSynced('googleDrive');
                         successCount += 1;
                         result.providers.googleDrive.synced = true;
                         result.providers.googleDrive.result = googleDriveResult || null;
@@ -582,6 +636,7 @@
                         );
                         failures.push(error);
                     }
+                }
                 }
             }
 
@@ -689,6 +744,19 @@
         };
         const settings = await getSyncSettings();
         if (!isAnySyncEnabled(settings)) return;
+
+        if (typeof chrome !== 'undefined' && chrome.runtime && typeof chrome.runtime.sendMessage === 'function') {
+            try {
+                await chrome.runtime.sendMessage({
+                    type: 'SCHEDULE_AUTO_SYNC',
+                    reason: reason || 'auto',
+                    source: config.source || 'local-write'
+                });
+                return;
+            } catch (error) {
+                console.warn('[ProblemData] 后台自动同步调度不可用，改用当前页面计时器：', error);
+            }
+        }
 
         if (modules.state.localWriteSyncTimer) {
             clearTimeout(modules.state.localWriteSyncTimer);

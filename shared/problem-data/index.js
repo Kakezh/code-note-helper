@@ -1,6 +1,6 @@
 ﻿/**
  * 刷题记录共享仓库组装入口
- * 版本：1.1.3
+ * 版本：1.1.4
  */
 
 (function () {
@@ -20,6 +20,7 @@
             HOT100_CONFIG: constants.HOT100_CONFIG,
             STAGE_LABELS: constants.STAGE_LABELS,
             ACTION_LABELS: constants.ACTION_LABELS,
+            SYNC_AUTO_INTERVAL_MS: constants.SYNC_AUTO_INTERVAL_MS,
             PAGE_SIZE: constants.PAGE_SIZE,
             extractProblemIdentity: records.extractProblemIdentity,
             createIdentityFromSiteAndProblemKey: records.createIdentityFromSiteAndProblemKey,

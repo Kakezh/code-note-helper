@@ -1,12 +1,13 @@
 ﻿/**
  * Popup 入口脚本
- * 版本：1.1.2
+ * 版本：1.1.4
  */
 
 (function () {
     'use strict';
 
-    const AUTO_SYNC_INTERVAL_MS = 1 * 60 * 1000;
+    // 与 shared/problem-data/constants.js 保持一致：本地变更后三分钟合并同步。
+    const AUTO_SYNC_INTERVAL_MS = 3 * 60 * 1000;
     const SYNC_INDICATOR_CRUISE_INTERVAL_MS = 2000;
     const SYNC_INDICATOR_CRUISE_DURATION_MS = 1200;
 
@@ -239,7 +240,7 @@
             }
             if (shouldStart && !schedulerStarted && typeof store.startAutoSyncScheduler === 'function') {
                 const startResult = await store.startAutoSyncScheduler({
-                    intervalMs: AUTO_SYNC_INTERVAL_MS
+                    intervalMs: store.SYNC_AUTO_INTERVAL_MS || AUTO_SYNC_INTERVAL_MS
                 });
                 schedulerStarted = Boolean(startResult && startResult.started);
             }

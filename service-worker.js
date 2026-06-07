@@ -1,7 +1,26 @@
 ﻿/**
  * 后台 Service Worker
- * 版本：1.1.3
+ * 版本：1.1.4
  */
+
+const CODE_NOTE_AUTO_SYNC_ALARM_NAME = 'code-note-helper-auto-sync';
+const CODE_NOTE_SYNC_META_KEY = 'note_helper_sync_meta_v1';
+const CODE_NOTE_SYNC_SETTINGS_KEY = 'note_helper_sync_settings_v1';
+const CODE_NOTE_AUTO_SYNC_INTERVAL_MS = 3 * 60 * 1000;
+let problemDataApiReadyPromise = null;
+
+if (!globalThis.window) {
+    globalThis.window = globalThis;
+}
+
+importScripts(
+    'shared/problem-data/constants.js',
+    'shared/problem-data/helpers.js',
+    'shared/problem-data/sync-core.js',
+    'shared/problem-data/providers/nutstore-webdav.js',
+    'shared/problem-data/providers/google-drive.js',
+    'shared/problem-data/index.js'
+);
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     handleMessage(message, sender)
@@ -15,6 +34,50 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         });
     return true;
 });
+
+if (chrome.alarms && chrome.alarms.onAlarm) {
+    chrome.alarms.onAlarm.addListener((alarm) => {
+        if (!alarm || alarm.name !== CODE_NOTE_AUTO_SYNC_ALARM_NAME) return;
+        runBackgroundAutoSync()
+            .catch((error) => {
+                console.error('[Service Worker] 后台自动同步失败：', error);
+            });
+    });
+}
+
+if (chrome.storage && chrome.storage.onChanged) {
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+        if (areaName !== 'local') return;
+        const metaChange = changes[CODE_NOTE_SYNC_META_KEY];
+        const oldRevision = Number(metaChange && metaChange.oldValue && metaChange.oldValue.localRevision || 0);
+        const newRevision = Number(metaChange && metaChange.newValue && metaChange.newValue.localRevision || 0);
+        const localRevisionChanged = Boolean(metaChange && newRevision !== oldRevision);
+        if (localRevisionChanged || changes[CODE_NOTE_SYNC_SETTINGS_KEY]) {
+            scheduleBackgroundAutoSyncIfNeeded()
+                .catch((error) => {
+                    console.error('[Service Worker] 自动同步调度失败：', error);
+                });
+        }
+    });
+}
+
+if (chrome.runtime.onStartup) {
+    chrome.runtime.onStartup.addListener(() => {
+        scheduleBackgroundAutoSyncIfNeeded()
+            .catch((error) => {
+                console.error('[Service Worker] 启动后自动同步调度失败：', error);
+            });
+    });
+}
+
+if (chrome.runtime.onInstalled) {
+    chrome.runtime.onInstalled.addListener(() => {
+        scheduleBackgroundAutoSyncIfNeeded()
+            .catch((error) => {
+                console.error('[Service Worker] 安装后自动同步调度失败：', error);
+            });
+    });
+}
 
 async function handleMessage(message, sender) {
     const { type } = message || {};
@@ -44,6 +107,9 @@ async function handleMessage(message, sender) {
             return handleGoogleDriveRequest(message);
         case 'GOOGLE_DRIVE_REVOKE':
             return handleGoogleDriveRevoke(message);
+        case 'SCHEDULE_AUTO_SYNC':
+            await scheduleBackgroundAutoSyncIfNeeded();
+            return { success: true };
         default:
             throw new Error(`未知消息类型：${type}`);
     }
@@ -52,12 +118,113 @@ async function handleMessage(message, sender) {
 const GOOGLE_DRIVE_SYNC_SETTINGS_KEY = 'note_helper_sync_settings_v1';
 const GOOGLE_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 
-async function ensureGoogleDriveRuntimePermissions() {
+async function readLocalStorageValues(keys) {
+    return chrome.storage.local.get(keys);
+}
+
+function isProviderEnabled(settings) {
+    const syncSettings = settings && typeof settings === 'object' ? settings : {};
+    return Boolean(
+        syncSettings.webdav && syncSettings.webdav.enabled ||
+        syncSettings.googleDrive && syncSettings.googleDrive.enabled
+    );
+}
+
+function hasUnsyncedProvider(meta, settings) {
+    if (!meta || !settings || !isProviderEnabled(settings)) return false;
+    const localRevision = Number(meta.localRevision || 0);
+    const syncedRevision = meta.syncedRevision || {};
+    if (settings.webdav && settings.webdav.enabled && localRevision > Number(syncedRevision.webdav || 0)) {
+        return true;
+    }
+    if (settings.googleDrive && settings.googleDrive.enabled && localRevision > Number(syncedRevision.googleDrive || 0)) {
+        return true;
+    }
+    return false;
+}
+
+async function scheduleBackgroundAutoSyncIfNeeded() {
+    if (!chrome.alarms || typeof chrome.alarms.create !== 'function') return;
+    const storage = await readLocalStorageValues([
+        CODE_NOTE_SYNC_META_KEY,
+        CODE_NOTE_SYNC_SETTINGS_KEY
+    ]);
+    const meta = storage[CODE_NOTE_SYNC_META_KEY] || {};
+    const settings = storage[CODE_NOTE_SYNC_SETTINGS_KEY] || {};
+
+    if (!hasUnsyncedProvider(meta, settings)) {
+        await chrome.alarms.clear(CODE_NOTE_AUTO_SYNC_ALARM_NAME);
+        return;
+    }
+
+    await chrome.alarms.create(CODE_NOTE_AUTO_SYNC_ALARM_NAME, {
+        when: Date.now() + CODE_NOTE_AUTO_SYNC_INTERVAL_MS
+    });
+}
+
+async function ensureProblemDataApiForServiceWorker() {
+    if (problemDataApiReadyPromise) return problemDataApiReadyPromise;
+    problemDataApiReadyPromise = (async () => {
+        const modules = globalThis.NoteHelperProblemDataModules || {};
+        if (modules.helpers) {
+            modules.helpers.sendRuntimeMessage = async (type, data) => handleMessage({
+                type,
+                ...(data || {})
+            }, {});
+        }
+        if (typeof modules.createApi !== 'function') {
+            throw new Error('自动同步模块未准备完成');
+        }
+        return modules.createApi();
+    })();
+    return problemDataApiReadyPromise;
+}
+
+async function runBackgroundAutoSync() {
+    const storage = await readLocalStorageValues([
+        CODE_NOTE_SYNC_META_KEY,
+        CODE_NOTE_SYNC_SETTINGS_KEY
+    ]);
+    const meta = storage[CODE_NOTE_SYNC_META_KEY] || {};
+    const settings = storage[CODE_NOTE_SYNC_SETTINGS_KEY] || {};
+    if (!hasUnsyncedProvider(meta, settings)) {
+        await chrome.alarms.clear(CODE_NOTE_AUTO_SYNC_ALARM_NAME);
+        return {
+            skipped: true,
+            reason: 'no-local-change'
+        };
+    }
+
+    const problemDataApi = await ensureProblemDataApiForServiceWorker();
+    if (!problemDataApi || typeof problemDataApi.runUnifiedSyncNow !== 'function') {
+        throw new Error('自动同步入口未准备完成');
+    }
+    return problemDataApi.runUnifiedSyncNow({
+        silent: true,
+        reason: 'auto-alarm',
+        source: 'service-worker-alarm'
+    });
+}
+
+async function ensureGoogleDriveRuntimePermissions(options = {}) {
+    const interactive = options.interactive !== false;
     const permissions = ['identity'];
     const origins = [
         'https://www.googleapis.com/*',
         'https://oauth2.googleapis.com/*'
     ];
+    if (!interactive) {
+        const granted = await chrome.permissions.contains({
+            permissions,
+            origins
+        });
+        if (!granted) {
+            const error = new Error('Google Drive 需要重新登录。请到设置页点击“登录并测试”，或手动点击“立即备份到 Google Drive”完成授权。');
+            error.errorType = 'auth-required';
+            throw error;
+        }
+        return;
+    }
     const granted = await chrome.permissions.request({
         permissions,
         origins
@@ -151,7 +318,10 @@ function parseGoogleDriveOAuthRedirect(redirectUrl) {
 }
 
 async function handleGoogleDriveAuthorize(message = {}) {
-    await ensureGoogleDriveRuntimePermissions();
+    const interactive = message.interactive !== false;
+    await ensureGoogleDriveRuntimePermissions({
+        interactive
+    });
 
     const { clientId, scope } = await getGoogleDriveOAuthConfig(message);
     const redirectUri = chrome.identity.getRedirectURL('google-drive');
@@ -160,20 +330,22 @@ async function handleGoogleDriveAuthorize(message = {}) {
     authUrl.searchParams.set('response_type', 'token');
     authUrl.searchParams.set('redirect_uri', redirectUri);
     authUrl.searchParams.set('scope', scope);
-    authUrl.searchParams.set('prompt', 'consent');
+    authUrl.searchParams.set('prompt', interactive ? 'consent' : 'none');
 
     try {
         const redirectUrl = await chrome.identity.launchWebAuthFlow({
             url: authUrl.toString(),
-            interactive: true
+            interactive
         });
         return parseGoogleDriveOAuthRedirect(redirectUrl);
     } catch (error) {
         if (error && error.errorType) {
             throw error;
         }
-        const wrapped = new Error(`Google Drive 授权未完成：${error && error.message ? error.message : String(error)}`);
-        wrapped.errorType = 'auth';
+        const wrapped = new Error(interactive
+            ? `Google Drive 授权未完成：${error && error.message ? error.message : String(error)}`
+            : 'Google Drive 需要重新登录。请到设置页点击“登录并测试”，或手动点击“立即备份到 Google Drive”完成授权。');
+        wrapped.errorType = interactive ? 'auth' : 'auth-required';
         throw wrapped;
     }
 }

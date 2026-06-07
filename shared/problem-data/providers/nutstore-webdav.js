@@ -343,7 +343,9 @@
     async function testNutstoreConnection() {
         try {
             const context = await prepareWebdavContext({ ensureDirectory: true });
-            await syncCore.markSyncSuccess('webdav', 'WebDAV 连接与远端目录可用');
+            await syncCore.markSyncSuccess('webdav', 'WebDAV 连接与远端目录可用', {
+                markRevisionSynced: false
+            });
             return {
                 success: true,
                 remotePath: context.config.remotePath,

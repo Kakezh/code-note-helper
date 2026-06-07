@@ -1,6 +1,6 @@
 /**
  * 问题数据常量定义
- * 版本：1.1.3
+ * 版本：1.1.4
  */
 
 (function () {
@@ -55,6 +55,10 @@
             deviceId: null,
             localRevision: 0,
             lastLocalWriteAt: null,
+            syncedRevision: {
+                webdav: 0,
+                googleDrive: 0
+            },
             lastSyncAt: {
                 webdav: null,
                 googleDrive: null
@@ -109,6 +113,8 @@
         GOOGLE_DRIVE_SCOPE: 'https://www.googleapis.com/auth/drive.file',
         GOOGLE_DRIVE_BACKUP_FOLDER_NAME: 'CodeNote Helper Backups',
         GOOGLE_DRIVE_DEFAULT_FILE_NAME: 'code-note-helper-full-backup.json',
+        // v1.1.4 产品要求：本地增删改后等待三分钟合并上传，降低云端上传频率。
+        SYNC_AUTO_INTERVAL_MS: 3 * 60 * 1000,
         PAGE_SIZE: 5
     };
 })();
