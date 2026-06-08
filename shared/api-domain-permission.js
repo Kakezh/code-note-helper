@@ -7,8 +7,7 @@
     'use strict';
 
     const STORAGE_KEYS = {
-        overwriteConfirmEnabled: 'note_helper_overwrite_confirm_enabled',
-        permissionNoticeAckedOrigins: 'note_helper_api_permission_notice_acked_origins'
+        overwriteConfirmEnabled: 'note_helper_overwrite_confirm_enabled'
     };
 
     function getRuntime() {
@@ -43,7 +42,7 @@
             return {
                 ok: false,
                 reason: 'invalid_url',
-                message: 'API Base URL 格式不正确，请检查后重试。'
+                message: 'API Base URL 格式不正确，请填写完整的 HTTPS 地址。'
             };
         }
 
@@ -51,7 +50,7 @@
             return {
                 ok: false,
                 reason: 'non_https',
-                message: 'API Base URL 仅支持 HTTPS 地址。'
+                message: 'API Base URL 仅支持 HTTPS 地址，请检查后再保存。'
             };
         }
 
@@ -156,74 +155,12 @@
         return requestByRuntime(pattern);
     }
 
-    function getPreflightNoticeMessage(origin) {
-        const domain = String(origin || '').trim() || '该 API 域名';
-        return [
-            `即将为 ${domain} 申请网络访问权限，仅用于将你填写的 API Key 和请求数据发送到该 API 服务。`,
-            '扩展不会把 API Key 或请求数据上传到开发者服务器。',
-            '是否留存、如何使用数据由该 API 服务提供方决定。',
-            '你可随时在浏览器扩展权限中撤销该域名授权。',
-            '',
-            '点击“确定”继续授权，点击“取消”放弃本次保存。'
-        ].join('\n');
-    }
-
-    async function getPermissionNoticeAckedOrigins() {
-        const storageApi = getStorageApi();
-        if (!storageApi) return {};
-        try {
-            const data = await storageApi.get([STORAGE_KEYS.permissionNoticeAckedOrigins]);
-            const map = data && data[STORAGE_KEYS.permissionNoticeAckedOrigins];
-            if (!map || typeof map !== 'object' || Array.isArray(map)) {
-                return {};
-            }
-            return map;
-        } catch (error) {
-            return {};
-        }
-    }
-
-    async function setPermissionNoticeAckedOrigin(pattern, acked) {
-        const storageApi = getStorageApi();
-        if (!storageApi) return;
-        const originMap = await getPermissionNoticeAckedOrigins();
-        if (acked) {
-            originMap[pattern] = Date.now();
-        } else {
-            delete originMap[pattern];
-        }
-        await storageApi.set({
-            [STORAGE_KEYS.permissionNoticeAckedOrigins]: originMap
-        });
-    }
-
-    async function shouldShowPreflightNotice(pattern) {
-        const originMap = await getPermissionNoticeAckedOrigins();
-        return !Boolean(originMap && originMap[pattern]);
-    }
-
-    function showPreflightNotice(origin) {
-        if (typeof window === 'undefined' || typeof window.confirm !== 'function') {
-            return true;
-        }
-        return window.confirm(getPreflightNoticeMessage(origin));
-    }
-
     function normalizePermissionErrorReason(error, fallbackReason) {
         const code = String(error && (error.code || error.message) || '').trim();
         if (code === 'runtime_unavailable' || code === 'runtime_context_invalidated') {
             return 'runtime_unavailable';
         }
         return fallbackReason;
-    }
-
-    async function waitForAckPersist(persistPromise) {
-        if (!persistPromise) return;
-        try {
-            await persistPromise;
-        } catch (error) {
-            // ack 记录失败不阻断主流程，避免影响授权结果返回。
-        }
     }
 
     async function ensureApiDomainPermission(rawUrl, options = {}) {
@@ -233,7 +170,7 @@
             return normalized;
         }
 
-        const { pattern, origin } = normalized;
+        const { pattern } = normalized;
         let hasPermission = false;
         try {
             hasPermission = await containsPermission(pattern);
@@ -267,34 +204,10 @@
             };
         }
 
-        let needsPreflightNotice = false;
-        try {
-            needsPreflightNotice = await shouldShowPreflightNotice(pattern);
-        } catch (error) {
-            needsPreflightNotice = true;
-        }
-
-        let ackPersistPromise = null;
-        if (needsPreflightNotice) {
-            const confirmed = showPreflightNotice(origin);
-            if (!confirmed) {
-                return {
-                    ok: false,
-                    pattern,
-                    reason: 'preflight_cancelled',
-                    message: '已取消授权，未保存该 API 配置。'
-                };
-            }
-            ackPersistPromise = setPermissionNoticeAckedOrigin(pattern, true).catch((error) => {
-                console.warn('[API Permission] 记录域名说明确认状态失败：', error);
-            });
-        }
-
         let granted = false;
         try {
             granted = await requestPermission(pattern);
         } catch (error) {
-            await waitForAckPersist(ackPersistPromise);
             const reason = normalizePermissionErrorReason(error, 'request_failed');
             return {
                 ok: false,
@@ -302,18 +215,16 @@
                 reason,
                 message: reason === 'runtime_unavailable'
                     ? '扩展上下文已失效，请刷新当前页面后重试。'
-                    : '权限申请失败，请稍后重试。'
+                    : '没有完成网络访问授权，请再次点击保存，并在浏览器弹窗中选择允许。'
             };
         }
-
-        await waitForAckPersist(ackPersistPromise);
 
         if (granted === false) {
             return {
                 ok: false,
                 pattern,
                 reason: 'denied',
-                message: '未授予该 API 域名的网络访问权限，无法使用该接口。'
+                message: '未授予该 API 服务的访问权限，API 配置暂未保存。'
             };
         }
 
@@ -322,7 +233,7 @@
                 ok: false,
                 pattern,
                 reason: 'request_failed',
-                message: '权限申请失败，请稍后重试。'
+                message: '没有完成网络访问授权，请再次点击保存，并在浏览器弹窗中选择允许。'
             };
         }
 

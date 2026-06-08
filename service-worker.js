@@ -26,7 +26,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     handleMessage(message, sender)
         .then(sendResponse)
         .catch((error) => {
-            console.error('[Service Worker] 消息处理失败：', error);
+            if (!isExpectedSilentGoogleDriveAuthRequired(message, error)) {
+                console.error('[Service Worker] 消息处理失败：', error);
+            }
             sendResponse({
                 error: error && error.message ? error.message : String(error),
                 errorType: error && error.errorType ? error.errorType : 'runtime'
@@ -34,6 +36,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         });
     return true;
 });
+
+function isExpectedSilentGoogleDriveAuthRequired(message, error) {
+    return Boolean(
+        message &&
+        message.type === 'GOOGLE_DRIVE_AUTHORIZE' &&
+        message.interactive === false &&
+        error &&
+        error.errorType === 'auth-required'
+    );
+}
 
 if (chrome.alarms && chrome.alarms.onAlarm) {
     chrome.alarms.onAlarm.addListener((alarm) => {

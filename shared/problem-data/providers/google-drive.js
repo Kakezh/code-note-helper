@@ -179,9 +179,25 @@
         return expiresAt > Date.now() + 60 * 1000;
     }
 
+    async function requestAccessToken(settings, interactive) {
+        try {
+            return await sendRuntimeMessage('GOOGLE_DRIVE_AUTHORIZE', {
+                interactive: interactive === true,
+                clientId: settings.clientId,
+                scope: DRIVE_SCOPE
+            });
+        } catch (error) {
+            const normalized = normalizeGoogleDriveAuthError(error);
+            throw createGoogleDriveError(normalized.message, {
+                stage: 'auth',
+                errorType: normalized.errorType
+            });
+        }
+    }
+
     async function ensureAccessToken(options = {}) {
         const config = {
-            interactive: false,
+            allowInteractiveFallback: false,
             ...(options || {})
         };
         const settings = await getGoogleDriveSettings();
@@ -193,18 +209,23 @@
             return cached.accessToken;
         }
 
-        let authResult;
+        let authResult = null;
+        let silentError = null;
         try {
-            authResult = await sendRuntimeMessage('GOOGLE_DRIVE_AUTHORIZE', {
-                interactive: config.interactive === true,
-                clientId: settings.clientId,
-                scope: DRIVE_SCOPE
-            });
+            authResult = await requestAccessToken(settings, false);
         } catch (error) {
-            const normalized = normalizeGoogleDriveAuthError(error);
-            throw createGoogleDriveError(normalized.message, {
+            silentError = error;
+        }
+
+        if ((!authResult || !authResult.accessToken) && config.allowInteractiveFallback === true) {
+            authResult = await requestAccessToken(settings, true);
+        } else if (!authResult || !authResult.accessToken) {
+            if (silentError) {
+                throw silentError;
+            }
+            throw createGoogleDriveError('Google Drive 授权没有完成。请在设置页重新登录后再重试。', {
                 stage: 'auth',
-                errorType: normalized.errorType
+                errorType: 'auth-required'
             });
         }
 
@@ -407,7 +428,7 @@
     async function testGoogleDriveConnection(options = {}) {
         try {
             const accessToken = await ensureAccessToken({
-                interactive: options.interactive !== false
+                allowInteractiveFallback: options.interactive !== false
             });
             const settings = await getGoogleDriveSettings();
             const folder = await findBackupFolder(accessToken, settings.folderName);
@@ -439,7 +460,7 @@
     async function backupToGoogleDrive(options = {}) {
         try {
             let accessToken = await ensureAccessToken({
-                interactive: options.interactive === true
+                allowInteractiveFallback: options.interactive === true
             });
             const settings = await getGoogleDriveSettings();
             const snapshot = await syncCore.buildFullSnapshot();
@@ -453,7 +474,7 @@
                 }
                 await writeCachedToken(null);
                 accessToken = await ensureAccessToken({
-                    interactive: true
+                    allowInteractiveFallback: options.interactive === true
                 });
                 backupResult = await runGoogleDriveBackup(accessToken, settings, jsonText);
             }
@@ -488,7 +509,7 @@
     async function restoreFromGoogleDrive(options = {}) {
         try {
             const accessToken = await ensureAccessToken({
-                interactive: options.interactive === true
+                allowInteractiveFallback: options.interactive === true
             });
             const settings = await getGoogleDriveSettings();
             const folder = await findBackupFolder(accessToken, settings.folderName);

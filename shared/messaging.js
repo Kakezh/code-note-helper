@@ -34,6 +34,18 @@ const Messaging = {
         return Boolean(this._getRecoverableRuntimeCode(error));
     },
 
+    isExpectedSilentGoogleDriveAuthRequired(type, data, error) {
+        return Boolean(
+            type === 'GOOGLE_DRIVE_AUTHORIZE' &&
+            data &&
+            data.interactive === false &&
+            (
+                error && error.errorType === 'auth-required' ||
+                String(error && error.message || error || '').includes('Google Drive 需要重新登录')
+            )
+        );
+    },
+
     /**
      * 发送消息到 Service Worker
      * @param {string} type 消息类型
@@ -44,7 +56,11 @@ const Messaging = {
         try {
             const response = await chrome.runtime.sendMessage({ type, ...data });
             if (response && response.error) {
-                throw new Error(response.error);
+                const responseError = new Error(response.error);
+                if (response.errorType) {
+                    responseError.errorType = response.errorType;
+                }
+                throw responseError;
             }
             return response;
         } catch (e) {
@@ -55,7 +71,9 @@ const Messaging = {
                 }
                 throw this._normalizeError(e);
             }
-            console.error('[Messaging] 发送失败:', type, e);
+            if (!this.isExpectedSilentGoogleDriveAuthRequired(type, data, e)) {
+                console.error('[Messaging] 发送失败:', type, e);
+            }
             throw this._normalizeError(e);
         }
     },

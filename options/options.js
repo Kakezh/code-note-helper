@@ -739,7 +739,7 @@
                     requestIfMissing: true
                 });
                 if (!permissionResult.ok) {
-                    showToast(permissionResult.message || '未授予该 API 域名的网络访问权限，无法使用该接口。', 3200);
+                    showToast(permissionResult.message || '未授予该 API 服务的访问权限，API 配置暂未保存。', 3200);
                     return;
                 }
 
