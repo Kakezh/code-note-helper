@@ -165,6 +165,23 @@ function detectCodeLanguage(code) {
         return `用户已选择 ${parts.join('')} 作为推荐题解。推荐方案必须优先采用这篇题解的核心思路；其他题解只用于对比、补充或说明取舍。`;
     }
 
+    function normalizeCustomRecommendationRequirement(customRecommendationRequirement) {
+        return String(customRecommendationRequirement || '').trim();
+    }
+
+    function buildCustomRecommendationRequirementPrompt(customRecommendationRequirement) {
+        const requirement = normalizeCustomRecommendationRequirement(customRecommendationRequirement);
+        if (!requirement) return '';
+        return `用户已选择“自定义要求”：${requirement}
+- 这是用户自然语言偏好，是最高优先级的讲解约束之一。
+- 这不是扩展识别出的结构化方法结果，不代表扩展已经判断出某个方法边界。
+- 扩展没有裁剪参考题解正文，AI 必须在完整参考题解中按用户要求聚焦讲解。
+- 如果用户要求聚焦某种方法、写法、作者或排除某种方法，必须在推荐方案和详细讲解中体现。
+- 如果提供的参考题解中找不到该要求对应内容，必须明确说明“未在提供的参考题解中找到该要求对应内容”，不得编造。
+- 不得因为其他题解点赞更高、作者更知名或默认推荐策略而忽略自定义要求。
+- 自定义要求优先级高于默认推荐策略，但不得高于题目事实、参考题解原文和用户代码真实内容。`;
+    }
+
     function filterSolutionByLanguage(content, targetLang) {
         if (!content || !targetLang) return content;
 
@@ -343,7 +360,7 @@ ${mustIncludeCode
     // === 完整的 Prompt 生成（包含所有约束） ===
 
     function generatePrompt(data) {
-        const { noteTitle, problem, myCode, officialSolution, headingLevel, userLevel, notes, url, noteMode, recommendedSolution } = data;
+        const { noteTitle, problem, myCode, officialSolution, headingLevel, userLevel, notes, url, noteMode, recommendedSolution, customRecommendationRequirement } = data;
 
         if (noteMode === 'qa_only') {
             return generateQaOnlyPrompt(data);
@@ -404,7 +421,10 @@ ${mustIncludeCode
         // 综合判定：多个独立题解 或 单题解内多方法 都视为"多题解情况"
         const hasMultipleSolutions = hasMultipleDistinctSolutions || hasMultipleMethodsInSingleSolution;
         const recommendationExplainPrompt = buildRecommendationExplainPrompt(userLevel);
-        const selectedRecommendationPrompt = buildSelectedRecommendationPrompt(recommendedSolution);
+        const customRecommendationPrompt = buildCustomRecommendationRequirementPrompt(customRecommendationRequirement);
+        const selectedRecommendationPrompt = customRecommendationPrompt
+            ? ''
+            : buildSelectedRecommendationPrompt(recommendedSolution);
 
         // 用户水平详细说明映射
         const levelDescMap = {
@@ -444,10 +464,14 @@ ${mustIncludeCode
         };
         const commentLevel = commentLevelMap[userLevel] || commentLevelMap['小白'];
 
-        let rolePrompt = `我是 LeetCode【${userLevel}】，我需要你作为互联网大厂资深代码专家，耐心细致的给我讲解代码。请根据我提供的刷题信息，生成一份结构化的 Markdown 刷题笔记。讲解风格请根据我的水平进行调整（${levelDesc}）。`;
+        let rolePrompt = `我是 LeetCode【${userLevel}】，我需要你作为互联网大厂资深代码专家，耐心细致的给我讲解代码。请根据我提供的刷题信息，生成一份结构化的 Markdown 刷题笔记。讲解风格请根据我的水平进行调整（${levelDesc}）。${customRecommendationPrompt ? '如果我选择了“自定义要求”，必须优先遵守该自然语言偏好，并在推荐方案和详细讲解中体现。' : ''}`;
 
         let prompt = `## 任务说明
 ${rolePrompt}
+${customRecommendationPrompt ? `
+## 自定义要求优先级
+${customRecommendationPrompt}
+` : ''}
 
 ## 输出格式要求
 
@@ -503,6 +527,8 @@ ${h3} 方案对比（必须包含作者列）
 
 ${h3} 推荐方案
 ${selectedRecommendationPrompt ? `**用户已选择推荐题解：${selectedRecommendationPrompt}**` : ''}
+${customRecommendationPrompt ? `**用户已选择“自定义要求”（必须优先遵守）：**
+${customRecommendationPrompt}` : ''}
 \`\`\`python
 # ===== 推荐方案（来自 @作者名）=====
 # 【整体思路】：在此简要描述算法的核心思想
@@ -583,6 +609,8 @@ ${recommendationExplainPrompt}
 - 违规处理：若缺失该小节或位置错误，视为本次输出不合格，必须完整重写
 
 ${selectedRecommendationPrompt ? `**用户已选择推荐题解：${selectedRecommendationPrompt}**` : ''}
+${customRecommendationPrompt ? `**用户已选择“自定义要求”（必须优先遵守）：**
+${customRecommendationPrompt}` : ''}
 
 \`\`\`python
 # ===== 优化题解（来自 @作者名）=====
@@ -665,9 +693,24 @@ ${myCode || '未提供'}
 
 `;
 
+        if (customRecommendationPrompt) {
+            prompt += `### 【自定义要求】
+「
+${normalizeCustomRecommendationRequirement(customRecommendationRequirement)}
+」
+
+**强制说明**：这是用户自然语言偏好，不是结构化识别结果；扩展没有裁剪参考题解正文。你必须在完整参考题解中按该要求聚焦讲解，若找不到对应内容，必须明确说明“未在提供的参考题解中找到该要求对应内容”，不得编造。
+
+`;
+        }
+
         if (officialSolution && officialSolution.trim()) {
             if (hasMultipleSolutions) {
                 prompt += `### 【题解方案（按点赞量排序）】
+${selectedRecommendationPrompt ? `**用户已选择推荐题解（必须优先遵守）：**
+- ${selectedRecommendationPrompt}
+- 下面题解虽然按点赞量排序展示，但推荐方案必须以用户选择为准，不得因为其他题解点赞更高、作者更知名或默认推荐策略而改选。
+` : ''}
 「
 ${officialSolution}
 」
@@ -682,9 +725,14 @@ ${officialSolution}
 3. **【详细解析推荐方案】**：综合考虑面试适用性，选出一个最优方案作为“推荐方案”。
 4. **【列举其他可行方案】**：将其他方案作为“其他可行方案”列出，并确保**每个方案都包含完整代码**。
 ${selectedRecommendationPrompt ? `5. **【用户已选择推荐题解】**：${selectedRecommendationPrompt}` : ''}
+${customRecommendationPrompt ? `${selectedRecommendationPrompt ? '6' : '5'}. **【用户已选择“自定义要求”】**：必须优先遵守用户自然语言偏好；不得因为灵神默认策略、点赞排序或作者知名度覆盖该要求。若参考题解正文中找不到对应内容，必须说明“未在提供的参考题解中找到该要求对应内容”。` : ''}
 `;
             } else {
                 prompt += `### 【参考题解】
+${selectedRecommendationPrompt ? `**用户已选择推荐题解（必须优先遵守）：**
+- ${selectedRecommendationPrompt}
+- 推荐方案必须优先采用这篇题解的核心思路，其他内容只用于补充或说明取舍。
+` : ''}
 「
 ${officialSolution}
 」
@@ -761,6 +809,7 @@ ${notes}
    - 若缺失、错位、编号不一致或出现统一讲解，视为整份答案不合格并重写
 11. **【强制要求】若“我的疑问/体会”非空，必须逐字原样输出用户原文；未原文输出视为失败并重写。**
 ${selectedRecommendationPrompt ? `12. **【强制要求】${selectedRecommendationPrompt}**` : ''}
+${customRecommendationPrompt ? `${selectedRecommendationPrompt ? '13' : '12'}. **【强制要求】用户已选择“自定义要求”，必须优先遵守该自然语言偏好；它不是结构化识别结果，扩展没有裁剪参考题解正文。**` : ''}
 
 ## 🚨🚨🚨 关于参考题解的【最高优先级】强制约束 🚨🚨🚨
 
@@ -939,6 +988,13 @@ ${hasMultipleSolutions ? `6. **【强制要求】多个参考题解时：**
 ${selectedRecommendationPrompt ? `7. **【强制要求】用户已选择推荐题解：**
    - ${selectedRecommendationPrompt}
    - 不要因为题解中出现其他作者或更高点赞数，就改选其他方案作为推荐方案` : ''}
+${customRecommendationPrompt ? `7. **【强制要求】用户已选择“自定义要求”：**
+   - ${customRecommendationPrompt}
+   - 必须优先遵守用户自定义要求；如果用户要求聚焦某种方法、写法、作者或排除某种方法，必须在推荐方案和详细讲解中体现
+   - 如果参考题解正文中找不到用户要求的具体方法或写法，必须明确说明“未在提供的参考题解中找到该要求对应内容”，不得编造
+   - 不得因为其他题解点赞更高、作者更知名、灵神默认策略或默认推荐策略而忽略自定义要求
+   - 自定义要求优先级高于默认推荐策略，但不得高于题目事实、参考题解原文和用户代码真实内容
+   - 自定义要求不是结构化识别结果；扩展没有裁剪题解正文，AI 需要在完整参考题解中按用户要求聚焦讲解` : ''}
 8. **【强制要求】推荐题解详细讲解小节不可省略：**
    - 必须紧跟在推荐方案/优化题解代码块后立即输出
    - 必须是独立标题小节，包含实质分析，不得只有模板句或占位语

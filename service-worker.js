@@ -42,6 +42,7 @@ function isExpectedSilentGoogleDriveAuthRequired(message, error) {
         message &&
         message.type === 'GOOGLE_DRIVE_AUTHORIZE' &&
         message.interactive === false &&
+        message.allowInteractiveFallback !== true &&
         error &&
         error.errorType === 'auth-required'
     );
@@ -237,6 +238,13 @@ async function ensureGoogleDriveRuntimePermissions(options = {}) {
         }
         return;
     }
+    const alreadyGranted = await chrome.permissions.contains({
+        permissions,
+        origins
+    });
+    if (alreadyGranted) {
+        return;
+    }
     const granted = await chrome.permissions.request({
         permissions,
         origins
@@ -329,8 +337,30 @@ function parseGoogleDriveOAuthRedirect(redirectUrl) {
     };
 }
 
-async function handleGoogleDriveAuthorize(message = {}) {
-    const interactive = message.interactive !== false;
+function shouldFallbackToInteractiveGoogleDriveAuth(message, error) {
+    return Boolean(
+        message &&
+        message.interactive === false &&
+        message.allowInteractiveFallback === true &&
+        error &&
+        (
+            error.errorType === 'auth-required' ||
+            error.errorType === 'auth' && isSilentGoogleDriveInteractionRequired(error)
+        )
+    );
+}
+
+function isSilentGoogleDriveInteractionRequired(error) {
+    const message = String(error && error.message || error || '').toLowerCase();
+    return message === 'interaction_required' ||
+        message === 'login_required' ||
+        message === 'consent_required' ||
+        message.includes('interaction_required') ||
+        message.includes('login_required') ||
+        message.includes('consent_required');
+}
+
+async function runGoogleDriveAuthorizeFlow(message = {}, interactive) {
     await ensureGoogleDriveRuntimePermissions({
         interactive
     });
@@ -359,6 +389,18 @@ async function handleGoogleDriveAuthorize(message = {}) {
             : 'Google Drive 需要重新登录。请到设置页点击“登录并测试”，或手动点击“立即备份到 Google Drive”完成授权。');
         wrapped.errorType = interactive ? 'auth' : 'auth-required';
         throw wrapped;
+    }
+}
+
+async function handleGoogleDriveAuthorize(message = {}) {
+    const interactive = message.interactive !== false;
+    try {
+        return await runGoogleDriveAuthorizeFlow(message, interactive);
+    } catch (error) {
+        if (!shouldFallbackToInteractiveGoogleDriveAuth(message, error)) {
+            throw error;
+        }
+        return runGoogleDriveAuthorizeFlow(message, true);
     }
 }
 

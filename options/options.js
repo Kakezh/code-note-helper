@@ -194,6 +194,22 @@
             return normalizeGoogleDriveClientId(elements.googleDriveClientId && elements.googleDriveClientId.value);
         }
 
+        async function ensureGoogleDriveRuntimePermissionForUserGesture() {
+            if (typeof chrome === 'undefined' || !chrome.permissions || typeof chrome.permissions.request !== 'function') {
+                return;
+            }
+            const granted = await chrome.permissions.request({
+                permissions: ['identity'],
+                origins: [
+                    'https://www.googleapis.com/*',
+                    'https://oauth2.googleapis.com/*'
+                ]
+            });
+            if (!granted) {
+                throw new Error('你取消了 Google Drive 授权，备份不会上传。');
+            }
+        }
+
         function applyGoogleDriveAuthState(authStatus) {
             const clientIdReady = isGoogleDriveClientIdConfigured(getGoogleDriveClientIdInput());
             googleDriveAuthConfigured = clientIdReady && !(authStatus && authStatus.configured === false);
@@ -650,6 +666,7 @@
         if (elements.btnTestGoogleDrive) {
             elements.btnTestGoogleDrive.addEventListener('click', async () => {
                 try {
+                    await ensureGoogleDriveRuntimePermissionForUserGesture();
                     setBusy(elements.btnTestGoogleDrive, true);
                     await saveSyncSettings();
                     await store.testGoogleDriveConnection({
@@ -669,6 +686,7 @@
         if (elements.btnBackupGoogleDrive) {
             elements.btnBackupGoogleDrive.addEventListener('click', async () => {
                 try {
+                    await ensureGoogleDriveRuntimePermissionForUserGesture();
                     setBusy(elements.btnBackupGoogleDrive, true);
                     await saveSyncSettings();
                     await store.backupToGoogleDrive({

@@ -179,10 +179,11 @@
         return expiresAt > Date.now() + 60 * 1000;
     }
 
-    async function requestAccessToken(settings, interactive) {
+    async function requestAccessToken(settings, interactive, options = {}) {
         try {
             return await sendRuntimeMessage('GOOGLE_DRIVE_AUTHORIZE', {
                 interactive: interactive === true,
+                allowInteractiveFallback: options.allowInteractiveFallback === true,
                 clientId: settings.clientId,
                 scope: DRIVE_SCOPE
             });
@@ -212,13 +213,17 @@
         let authResult = null;
         let silentError = null;
         try {
-            authResult = await requestAccessToken(settings, false);
+            authResult = await requestAccessToken(settings, false, {
+                allowInteractiveFallback: config.allowInteractiveFallback === true
+            });
         } catch (error) {
             silentError = error;
         }
 
         if ((!authResult || !authResult.accessToken) && config.allowInteractiveFallback === true) {
-            authResult = await requestAccessToken(settings, true);
+            if (silentError) {
+                throw silentError;
+            }
         } else if (!authResult || !authResult.accessToken) {
             if (silentError) {
                 throw silentError;

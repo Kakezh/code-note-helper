@@ -41,9 +41,12 @@
     const trackingSubmissionInFlight = new Set();
     const submitIntentMemoryCache = new Map();
     let reviewReminderTimer = null;
+    const CUSTOM_RECOMMENDATION_OPTION_VALUE = '__custom_requirement__';
     let recommendationSelectionState = {
         entries: [],
-        selectedId: ''
+        selectedId: '',
+        mode: 'none',
+        customRequirement: ''
     };
 
     const ICON_DRAG_LONG_PRESS_MS = 500;
@@ -107,7 +110,9 @@
         recommendationEntrySeq = 0;
         recommendationSelectionState = {
             entries: [],
-            selectedId: ''
+            selectedId: '',
+            mode: 'none',
+            customRequirement: ''
         };
         renderRecommendationSelector();
     }
@@ -191,6 +196,8 @@ ${content}`;
         const group = document.getElementById('p-recommendation-group');
         const select = document.getElementById('p-recommendation-select');
         const hint = document.getElementById('p-recommendation-hint');
+        const customWrap = document.getElementById('p-custom-recommendation-wrap');
+        const customInput = document.getElementById('p-custom-recommendation-requirement');
         if (!group || !select) return;
 
         const entries = Array.isArray(recommendationSelectionState.entries)
@@ -199,8 +206,18 @@ ${content}`;
         if (!entries.length) {
             group.style.display = 'none';
             select.innerHTML = '';
+            recommendationSelectionState.mode = 'none';
+            recommendationSelectionState.selectedId = '';
+            recommendationSelectionState.customRequirement = '';
             if (hint) {
                 hint.textContent = '';
+            }
+            if (customWrap) {
+                customWrap.style.display = 'none';
+            }
+            if (customInput) {
+                customInput.value = '';
+                customInput.disabled = true;
             }
             return;
         }
@@ -209,19 +226,42 @@ ${content}`;
         const selectedId = entries.some((entry) => entry.id === recommendationSelectionState.selectedId)
             ? recommendationSelectionState.selectedId
             : '';
-        recommendationSelectionState.selectedId = selectedId;
+        if (recommendationSelectionState.mode !== 'custom') {
+            recommendationSelectionState.selectedId = selectedId;
+            recommendationSelectionState.mode = selectedId ? 'entry' : 'none';
+        } else {
+            recommendationSelectionState.selectedId = '';
+        }
         select.innerHTML = [
             '<option value="">不指定推荐题解</option>',
-            ...entries.map((entry) => `<option value="${escapeRecommendationHtml(entry.id)}">${escapeRecommendationHtml(entry.optionText)}</option>`)
+            ...entries.map((entry) => `<option value="${escapeRecommendationHtml(entry.id)}">${escapeRecommendationHtml(entry.optionText)}</option>`),
+            `<option value="${CUSTOM_RECOMMENDATION_OPTION_VALUE}">自定义要求</option>`
         ].join('');
-        select.value = selectedId;
+        select.value = recommendationSelectionState.mode === 'custom'
+            ? CUSTOM_RECOMMENDATION_OPTION_VALUE
+            : selectedId;
+        const isCustomMode = recommendationSelectionState.mode === 'custom';
+        if (customWrap) {
+            customWrap.style.display = isCustomMode ? 'block' : 'none';
+        }
+        if (customInput) {
+            customInput.disabled = !isCustomMode;
+            customInput.value = isCustomMode ? (recommendationSelectionState.customRequirement || '') : '';
+        }
         if (hint) {
-            hint.textContent = selectedId
-                ? '生成笔记时会优先讲解你选择的这一篇。'
-                : '当前未指定推荐题解，AI 会根据参考答案自行选择。';
+            if (isCustomMode) {
+                hint.textContent = '生成笔记时会优先遵守你的自定义要求。';
+            } else {
+                hint.textContent = selectedId
+                    ? '生成笔记时会优先讲解你选择的这一篇。'
+                    : '当前未指定推荐题解，AI 会根据参考答案自行选择。';
+            }
         }
         if (options.focus) {
             select.focus();
+        }
+        if (options.focusCustomInput && customInput && isCustomMode) {
+            customInput.focus();
         }
     }
 
@@ -232,7 +272,9 @@ ${content}`;
             : (options.selectedId || (nextEntries[0] && nextEntries[0].id) || '');
         recommendationSelectionState = {
             entries: nextEntries,
-            selectedId: nextEntries.some((entry) => entry.id === nextSelectedId) ? nextSelectedId : ''
+            selectedId: nextEntries.some((entry) => entry.id === nextSelectedId) ? nextSelectedId : '',
+            mode: nextEntries.some((entry) => entry.id === nextSelectedId) ? 'entry' : 'none',
+            customRequirement: ''
         };
         if (options.updateTextarea) {
             const textarea = document.getElementById('p-official');
@@ -280,9 +322,12 @@ ${content}`;
         if (nextEntries.length === beforeCount) return;
 
         const selectedStillExists = nextEntries.some((entry) => entry.id === beforeSelectedId);
+        const preserveCustomMode = recommendationSelectionState.mode === 'custom' && nextEntries.length > 0;
         recommendationSelectionState = {
             entries: nextEntries,
-            selectedId: selectedStillExists ? beforeSelectedId : ''
+            selectedId: preserveCustomMode ? '' : (selectedStillExists ? beforeSelectedId : ''),
+            mode: preserveCustomMode ? 'custom' : (selectedStillExists ? 'entry' : 'none'),
+            customRequirement: preserveCustomMode ? recommendationSelectionState.customRequirement : ''
         };
         renderRecommendationSelector({
             focus: Boolean(options.focusWhenSelectedRemoved && beforeSelectedId && !selectedStillExists && nextEntries.length)
@@ -294,6 +339,7 @@ ${content}`;
 
     function getSelectedRecommendationForPrompt() {
         syncRecommendationEntriesFromTextarea();
+        if (recommendationSelectionState.mode === 'custom') return null;
         const selectedId = recommendationSelectionState.selectedId;
         const selectedEntry = (recommendationSelectionState.entries || []).find((entry) => entry.id === selectedId);
         if (!selectedEntry) return null;
@@ -302,6 +348,12 @@ ${content}`;
             title: selectedEntry.title,
             author: selectedEntry.author
         };
+    }
+
+    function getCustomRecommendationRequirementForPrompt() {
+        syncRecommendationEntriesFromTextarea();
+        if (recommendationSelectionState.mode !== 'custom') return '';
+        return String(recommendationSelectionState.customRequirement || '').trim();
     }
 
     function setGeneratingState(generating) {
@@ -1691,6 +1743,10 @@ ${content}`;
         <div class="form-group" id="p-recommendation-group" style="display:none">
             <label for="p-recommendation-select">推荐题解</label>
             <select id="p-recommendation-select"></select>
+            <div id="p-custom-recommendation-wrap" style="display:none;margin-top:8px;">
+                <label for="p-custom-recommendation-requirement" style="font-size:13px;color:#475569;margin-bottom:4px;">自定义要求</label>
+                <input type="text" id="p-custom-recommendation-requirement" placeholder="例如：只参考灵神题解里的贪心 + 二分查找写法" disabled>
+            </div>
             <div id="p-recommendation-hint" style="font-size:12px;color:#666;margin-top:4px"></div>
         </div>
 
@@ -1788,10 +1844,22 @@ ${content}`;
         document.getElementById('p-ai-platform').onchange = toggleApiSettings;
         document.getElementById('p-recommendation-select').onchange = (event) => {
             const value = event && event.target ? event.target.value : '';
+            if (value === CUSTOM_RECOMMENDATION_OPTION_VALUE) {
+                recommendationSelectionState.mode = 'custom';
+                recommendationSelectionState.selectedId = '';
+                renderRecommendationSelector({ focusCustomInput: true });
+                return;
+            }
             const exists = (recommendationSelectionState.entries || []).some((entry) => entry.id === value);
             recommendationSelectionState.selectedId = exists ? value : '';
+            recommendationSelectionState.mode = exists ? 'entry' : 'none';
+            recommendationSelectionState.customRequirement = '';
             renderRecommendationSelector();
         };
+        document.getElementById('p-custom-recommendation-requirement').addEventListener('input', (event) => {
+            if (recommendationSelectionState.mode !== 'custom') return;
+            recommendationSelectionState.customRequirement = event && event.target ? event.target.value : '';
+        });
         document.getElementById('p-official').addEventListener('input', () => {
             syncRecommendationEntriesFromTextarea({
                 notifyWhenSelectedRemoved: true,
@@ -2260,6 +2328,7 @@ ${content}`;
                 myCode: modal.dataset.rawCode || "",
                 officialSolution: official,
                 recommendedSolution: getSelectedRecommendationForPrompt(),
+                customRecommendationRequirement: getCustomRecommendationRequirementForPrompt(),
                 headingLevel,
                 userLevel,
                 noteMode,
