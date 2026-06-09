@@ -15,6 +15,7 @@ if (!globalThis.window) {
 
 importScripts(
     'shared/problem-data/constants.js',
+    'shared/problem-data/google-drive-oauth-config.js',
     'shared/problem-data/helpers.js',
     'shared/problem-data/sync-core.js',
     'shared/problem-data/providers/nutstore-webdav.js',
@@ -44,7 +45,7 @@ function isExpectedSilentGoogleDriveAuthRequired(message, error) {
         message.interactive === false &&
         message.allowInteractiveFallback !== true &&
         error &&
-        error.errorType === 'auth-required'
+        String(error.errorType || '').toLowerCase().replace(/_/g, '-') === 'auth-required'
     );
 }
 
@@ -260,20 +261,11 @@ function normalizeGoogleDriveClientId(clientId) {
     return String(clientId || '').trim();
 }
 
-function validateGoogleDriveClientId(clientId) {
-    const value = normalizeGoogleDriveClientId(clientId);
-    if (!value || value.includes('REPLACE_WITH_') || value.includes('{0}')) {
-        const error = new Error('请先在设置页填写 Google OAuth Client ID。');
-        error.errorType = 'auth_config';
-        throw error;
-    }
-    // Google OAuth Client ID 的公开格式稳定以此结尾；只做防误填，不替代 Google 授权结果。
-    if (!value.endsWith('.apps.googleusercontent.com')) {
-        const error = new Error('请确认填写的是 Google OAuth Client ID。');
-        error.errorType = 'auth_config';
-        throw error;
-    }
-    return value;
+function createGoogleDriveAuthError(message, errorType, detail = {}) {
+    const error = new Error(message);
+    error.errorType = errorType;
+    Object.assign(error, detail || {});
+    return error;
 }
 
 async function readGoogleDriveClientIdFromSettings() {
@@ -282,11 +274,68 @@ async function readGoogleDriveClientIdFromSettings() {
     return normalizeGoogleDriveClientId(settings.googleDrive && settings.googleDrive.clientId);
 }
 
+function getGoogleDriveOAuthConfigModule() {
+    return globalThis.NoteHelperProblemDataModules && globalThis.NoteHelperProblemDataModules.oauthConfig || {};
+}
+
+function validateGoogleDriveClientId(clientId) {
+    const oauthConfig = getGoogleDriveOAuthConfigModule();
+    const value = normalizeGoogleDriveClientId(clientId);
+    const valid = oauthConfig && typeof oauthConfig.isValidClientId === 'function'
+        ? oauthConfig.isValidClientId(value)
+        : Boolean(value && value.endsWith('.apps.googleusercontent.com') && !value.includes('REPLACE_WITH_') && !value.includes('{0}'));
+    if (!valid) {
+        throw createGoogleDriveAuthError('请确认 Google Drive 授权配置是否正确。', 'OAUTH_CONFIG_INVALID');
+    }
+    return value;
+}
+
+function isMicrosoftEdgeRuntime() {
+    const oauthConfig = getGoogleDriveOAuthConfigModule();
+    if (oauthConfig && typeof oauthConfig.isEdgeRuntime === 'function') {
+        return oauthConfig.isEdgeRuntime();
+    }
+    const userAgent = String(navigator && navigator.userAgent || '').toLowerCase();
+    return userAgent.includes(' edg/') || userAgent.includes(' edge/');
+}
+
+function getRuntimeOAuthClientId(overrideClientId = '') {
+    const oauthConfig = getGoogleDriveOAuthConfigModule();
+    const runtimeId = chrome.runtime && chrome.runtime.id || '';
+    const resolved = oauthConfig && typeof oauthConfig.resolveClientId === 'function'
+        ? oauthConfig.resolveClientId({ runtimeId, overrideClientId })
+        : { clientId: overrideClientId, configured: Boolean(overrideClientId), source: overrideClientId ? 'advanced' : 'missing' };
+    if (!resolved || !resolved.configured || !resolved.clientId) {
+        throw createGoogleDriveAuthError('当前扩展缺少可用的 Google Drive 授权配置，请到设置页的高级选项中填写 Client ID。', 'OAUTH_CONFIG_INVALID', {
+            runtimeId,
+            source: resolved && resolved.source || 'missing'
+        });
+    }
+    return validateGoogleDriveClientId(resolved.clientId);
+}
+
+function getChromeIdentityOAuthClientId(overrideClientId = '') {
+    const override = normalizeGoogleDriveClientId(overrideClientId);
+    if (override) {
+        return validateGoogleDriveClientId(override);
+    }
+    return validateGoogleDriveClientId(getChromeIdentityManifestClientId());
+}
+
 async function getGoogleDriveOAuthConfig(message = {}) {
-    const clientId = validateGoogleDriveClientId(message.clientId || await readGoogleDriveClientIdFromSettings());
+    const advancedClientId = message.clientId || await readGoogleDriveClientIdFromSettings();
+    const authProvider = resolveGoogleDriveAuthProvider();
+    if (authProvider === 'edge-unsupported') {
+        throw createGoogleDriveAuthError('Microsoft Edge 暂不支持 Google Drive 同步。请在 Chrome 中使用 Google Drive，或先使用本地 JSON / 坚果云备份。', 'BROWSER_API_UNSUPPORTED');
+    }
+    const clientId = authProvider === 'chrome-identity'
+        ? getChromeIdentityOAuthClientId(advancedClientId)
+        : getRuntimeOAuthClientId(advancedClientId);
     return {
         clientId,
-        scope: GOOGLE_DRIVE_SCOPE
+        scope: GOOGLE_DRIVE_SCOPE,
+        runtimeId: chrome.runtime && chrome.runtime.id || '',
+        authProvider
     };
 }
 
@@ -295,83 +344,197 @@ async function getGoogleDriveAuthStatus() {
         const config = await getGoogleDriveOAuthConfig();
         return {
             configured: true,
-            scope: config.scope
+            scope: config.scope,
+            runtimeId: config.runtimeId,
+            authProvider: config.authProvider,
+            clientIdSource: config.clientId ? 'configured' : 'missing'
         };
     } catch (error) {
         return {
             configured: false,
-            message: error && error.message ? error.message : '请先在设置页填写 Google OAuth Client ID。'
+            errorType: error && error.errorType || 'OAUTH_CONFIG_INVALID',
+            message: error && error.message ? error.message : '当前扩展缺少可用的 Google Drive 授权配置。'
         };
     }
 }
 
+function resolveGoogleDriveAuthProvider() {
+    if (isMicrosoftEdgeRuntime()) return 'edge-unsupported';
+    if (chrome.identity && typeof chrome.identity.getAuthToken === 'function') {
+        return 'chrome-identity';
+    }
+    if (chrome.identity && typeof chrome.identity.launchWebAuthFlow === 'function') {
+        return 'edge-launch-web-auth-flow';
+    }
+    return 'unsupported';
+}
+
 function parseGoogleDriveOAuthRedirect(redirectUrl) {
     if (!redirectUrl) {
-        const error = new Error('Google Drive 授权未完成，请稍后重试');
-        error.errorType = 'auth';
-        throw error;
+        throw createGoogleDriveAuthError('Google Drive 授权未完成，请稍后重试', 'AUTH_FLOW_FAILED');
     }
 
     const url = new URL(redirectUrl);
-    const hashParams = new URLSearchParams(String(url.hash || '').replace(/^#/, ''));
     const queryParams = new URLSearchParams(String(url.search || '').replace(/^\?/, ''));
-    const oauthError = hashParams.get('error') || queryParams.get('error');
+    const oauthError = queryParams.get('error');
     if (oauthError) {
-        const detail = hashParams.get('error_description') || queryParams.get('error_description') || oauthError;
-        const error = new Error(detail);
-        error.errorType = oauthError === 'access_denied' ? 'permission_denied' : 'auth';
-        throw error;
+        const detail = queryParams.get('error_description') || oauthError;
+        const errorType = oauthError === 'access_denied'
+            ? 'USER_CANCELLED_AUTH'
+            : (oauthError === 'redirect_uri_mismatch' ? 'REDIRECT_URI_MISMATCH' : 'AUTH_FLOW_FAILED');
+        throw createGoogleDriveAuthError(detail, errorType, { oauthError });
     }
 
-    const accessToken = hashParams.get('access_token') || queryParams.get('access_token');
-    if (!accessToken) {
-        const error = new Error('Google Drive 授权未完成，请稍后重试');
-        error.errorType = 'auth';
-        throw error;
+    const code = queryParams.get('code');
+    if (!code) {
+        throw createGoogleDriveAuthError('Google Drive 授权未完成，请稍后重试', 'AUTH_FLOW_FAILED');
     }
 
-    const expiresIn = Number(hashParams.get('expires_in') || queryParams.get('expires_in') || 3600);
     return {
-        accessToken,
-        expiresAt: Date.now() + Math.max(1, expiresIn) * 1000
+        code
     };
 }
 
-function shouldFallbackToInteractiveGoogleDriveAuth(message, error) {
-    return Boolean(
-        message &&
-        message.interactive === false &&
-        message.allowInteractiveFallback === true &&
-        error &&
-        (
-            error.errorType === 'auth-required' ||
-            error.errorType === 'auth' && isSilentGoogleDriveInteractionRequired(error)
-        )
-    );
+function getChromeIdentityManifestClientId() {
+    const manifest = chrome.runtime && typeof chrome.runtime.getManifest === 'function'
+        ? chrome.runtime.getManifest()
+        : {};
+    return normalizeGoogleDriveClientId(manifest && manifest.oauth2 && manifest.oauth2.client_id);
 }
 
-function isSilentGoogleDriveInteractionRequired(error) {
-    const message = String(error && error.message || error || '').toLowerCase();
-    return message === 'interaction_required' ||
-        message === 'login_required' ||
-        message === 'consent_required' ||
-        message.includes('interaction_required') ||
-        message.includes('login_required') ||
-        message.includes('consent_required');
+async function callChromeIdentityGetAuthToken(details) {
+    return new Promise((resolve, reject) => {
+        try {
+            const maybePromise = chrome.identity.getAuthToken(details, (result) => {
+                const lastError = chrome.runtime && chrome.runtime.lastError;
+                if (lastError) {
+                    reject(new Error(lastError.message || String(lastError)));
+                    return;
+                }
+                resolve(result);
+            });
+            if (maybePromise && typeof maybePromise.then === 'function') {
+                maybePromise.then(resolve, reject);
+            }
+        } catch (error) {
+            reject(error);
+        }
+    });
 }
 
-async function runGoogleDriveAuthorizeFlow(message = {}, interactive) {
+async function runChromeIdentityAuthProvider(message = {}, interactive) {
     await ensureGoogleDriveRuntimePermissions({
         interactive
     });
+    if (isMicrosoftEdgeRuntime() || !chrome.identity || typeof chrome.identity.getAuthToken !== 'function') {
+        throw createGoogleDriveAuthError('当前浏览器不支持 Chrome 授权方式。', 'BROWSER_API_UNSUPPORTED');
+    }
+    const manifestClientId = validateGoogleDriveClientId(getChromeIdentityManifestClientId());
+    try {
+        const result = await callChromeIdentityGetAuthToken({
+            interactive
+        });
+        const accessToken = typeof result === 'string'
+            ? result
+            : result && (result.token || result.accessToken);
+        if (!accessToken) {
+            throw createGoogleDriveAuthError('Google Drive 授权没有返回可用令牌。', 'AUTH_FLOW_FAILED');
+        }
+        return {
+            accessToken,
+            expiresAt: 0,
+            clientId: manifestClientId,
+            scope: GOOGLE_DRIVE_SCOPE,
+            authProvider: 'chrome-identity',
+            cacheAccessToken: false
+        };
+    } catch (error) {
+        if (error && error.errorType) throw error;
+        throw createGoogleDriveAuthError(error && error.message ? error.message : 'Google Drive 授权没有完成。', interactive ? 'AUTH_FLOW_FAILED' : 'AUTH_REQUIRED');
+    }
+}
 
+function base64UrlEncode(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    bytes.forEach((byte) => {
+        binary += String.fromCharCode(byte);
+    });
+    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function createPkceVerifier() {
+    const bytes = new Uint8Array(48);
+    crypto.getRandomValues(bytes);
+    return base64UrlEncode(bytes);
+}
+
+async function createPkceChallenge(verifier) {
+    const data = new TextEncoder().encode(verifier);
+    const digest = await crypto.subtle.digest('SHA-256', data);
+    return base64UrlEncode(digest);
+}
+
+async function postGoogleOAuthToken(body) {
+    const response = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: new URLSearchParams(body).toString()
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+        const oauthError = data && data.error || '';
+        const errorType = oauthError === 'invalid_grant'
+            ? 'AUTH_REQUIRED'
+            : (oauthError === 'redirect_uri_mismatch' ? 'REDIRECT_URI_MISMATCH' : 'AUTH_FLOW_FAILED');
+        throw createGoogleDriveAuthError(data && data.error_description || oauthError || 'Google Drive 授权没有完成。', errorType, {
+            oauthError,
+            status: response.status
+        });
+    }
+    return data;
+}
+
+async function refreshGoogleDriveAccessToken(message = {}) {
+    const { clientId, scope } = await getGoogleDriveOAuthConfig(message);
+    const refreshToken = String(message.refreshToken || '').trim();
+    if (!refreshToken) {
+        throw createGoogleDriveAuthError('Google Drive 需要重新登录。', 'AUTH_REQUIRED');
+    }
+    const tokenResult = await postGoogleOAuthToken({
+        client_id: clientId,
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken
+    });
+    return {
+        accessToken: tokenResult.access_token,
+        refreshToken,
+        expiresAt: Date.now() + Math.max(1, Number(tokenResult.expires_in || 3600)) * 1000,
+        tokenType: tokenResult.token_type || 'Bearer',
+        clientId,
+        scope: tokenResult.scope || scope,
+        authProvider: 'edge-launch-web-auth-flow'
+    };
+}
+
+async function runEdgeLaunchWebAuthFlowProvider(message = {}, interactive) {
+    await ensureGoogleDriveRuntimePermissions({
+        interactive
+    });
     const { clientId, scope } = await getGoogleDriveOAuthConfig(message);
     const redirectUri = chrome.identity.getRedirectURL('google-drive');
+    const codeVerifier = createPkceVerifier();
+    const codeChallenge = await createPkceChallenge(codeVerifier);
     const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
     authUrl.searchParams.set('client_id', clientId);
-    authUrl.searchParams.set('response_type', 'token');
+    authUrl.searchParams.set('response_type', 'code');
     authUrl.searchParams.set('redirect_uri', redirectUri);
     authUrl.searchParams.set('scope', scope);
+    authUrl.searchParams.set('code_challenge', codeChallenge);
+    authUrl.searchParams.set('code_challenge_method', 'S256');
+    authUrl.searchParams.set('access_type', 'offline');
     authUrl.searchParams.set('prompt', interactive ? 'consent' : 'none');
 
     try {
@@ -379,29 +542,58 @@ async function runGoogleDriveAuthorizeFlow(message = {}, interactive) {
             url: authUrl.toString(),
             interactive
         });
-        return parseGoogleDriveOAuthRedirect(redirectUrl);
+        const { code } = parseGoogleDriveOAuthRedirect(redirectUrl);
+        const tokenResult = await postGoogleOAuthToken({
+            client_id: clientId,
+            code,
+            code_verifier: codeVerifier,
+            grant_type: 'authorization_code',
+            redirect_uri: redirectUri
+        });
+        return {
+            accessToken: tokenResult.access_token,
+            refreshToken: tokenResult.refresh_token || '',
+            expiresAt: Date.now() + Math.max(1, Number(tokenResult.expires_in || 3600)) * 1000,
+            tokenType: tokenResult.token_type || 'Bearer',
+            clientId,
+            scope: tokenResult.scope || scope,
+            authProvider: 'edge-launch-web-auth-flow'
+        };
     } catch (error) {
         if (error && error.errorType) {
             throw error;
         }
-        const wrapped = new Error(interactive
-            ? `Google Drive 授权未完成：${error && error.message ? error.message : String(error)}`
-            : 'Google Drive 需要重新登录。请到设置页点击“登录并测试”，或手动点击“立即备份到 Google Drive”完成授权。');
-        wrapped.errorType = interactive ? 'auth' : 'auth-required';
-        throw wrapped;
+        const rawMessage = error && error.message ? error.message : String(error);
+        const authorizationPageFailed = rawMessage.includes('Authorization page could not be loaded');
+        const genericApprovalFailure = rawMessage.includes('The user did not approve access');
+        const errorType = authorizationPageFailed
+            ? 'AUTH_PAGE_LOAD_FAILED'
+            : (interactive ? 'AUTH_FLOW_FAILED' : 'AUTH_REQUIRED');
+        const interactiveMessage = genericApprovalFailure
+            ? 'Google Drive 授权没有完成。如果授权页面显示 redirect_uri_mismatch，请核对当前扩展 ID 与 OAuth Client 配置。'
+            : `Google Drive 授权未完成：${rawMessage}`;
+        throw createGoogleDriveAuthError(interactive
+            ? interactiveMessage
+            : 'Google Drive 需要重新登录。请到设置页点击“登录并测试”，或手动点击“立即备份到 Google Drive”完成授权。', errorType);
     }
 }
 
 async function handleGoogleDriveAuthorize(message = {}) {
     const interactive = message.interactive !== false;
-    try {
-        return await runGoogleDriveAuthorizeFlow(message, interactive);
-    } catch (error) {
-        if (!shouldFallbackToInteractiveGoogleDriveAuth(message, error)) {
-            throw error;
-        }
-        return runGoogleDriveAuthorizeFlow(message, true);
+    if (message.refreshToken) {
+        return refreshGoogleDriveAccessToken(message);
     }
+    const provider = resolveGoogleDriveAuthProvider();
+    if (provider === 'chrome-identity') {
+        return runChromeIdentityAuthProvider(message, interactive);
+    }
+    if (provider === 'edge-launch-web-auth-flow') {
+        if (!interactive && !message.refreshToken) {
+            throw createGoogleDriveAuthError('Google Drive 需要重新登录。请到设置页点击“登录并测试”，或手动点击“立即备份到 Google Drive”完成授权。', 'AUTH_REQUIRED');
+        }
+        return runEdgeLaunchWebAuthFlowProvider(message, interactive);
+    }
+    throw createGoogleDriveAuthError('当前浏览器不支持 Google Drive 授权。', 'BROWSER_API_UNSUPPORTED');
 }
 
 async function handleGoogleDriveRequest({

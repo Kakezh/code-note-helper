@@ -1,6 +1,6 @@
 ﻿/**
  * 高级设置页脚本
- * 版本：1.1.3
+ * 版本：1.1.4
  */
 
 (function () {
@@ -132,6 +132,10 @@
             googleDriveToggle: document.getElementById('google-drive-toggle'),
             googleDriveSettingsPanel: document.getElementById('google-drive-settings-panel'),
             googleDriveClientId: document.getElementById('google-drive-client-id'),
+            googleDriveClientIdGroup: document.getElementById('google-drive-client-id-group'),
+            googleDriveAuthModeHint: document.getElementById('google-drive-auth-mode-hint'),
+            googleDriveAuthModeBuiltIn: document.getElementById('google-drive-auth-mode-built-in'),
+            googleDriveAuthModeCustom: document.getElementById('google-drive-auth-mode-custom'),
             btnTestGoogleDrive: document.getElementById('btn-test-google-drive'),
             btnBackupGoogleDrive: document.getElementById('btn-backup-google-drive'),
             btnRestoreGoogleDrive: document.getElementById('btn-restore-google-drive'),
@@ -175,6 +179,7 @@
         let syncDirty = false;
         let apiDirty = false;
         let googleDriveAuthConfigured = true;
+        let googleDriveAuthWarningMessage = '';
 
         const showToast = createToast(elements.toast);
         const permissionHelper = window.NoteHelperApiDomainPermission || null;
@@ -194,6 +199,46 @@
             return normalizeGoogleDriveClientId(elements.googleDriveClientId && elements.googleDriveClientId.value);
         }
 
+        function isGoogleDriveClientIdReady(value) {
+            const clientId = normalizeGoogleDriveClientId(value);
+            return !clientId || isGoogleDriveClientIdConfigured(clientId);
+        }
+
+        function isGoogleDriveCustomAuthMode() {
+            return Boolean(elements.googleDriveAuthModeCustom && elements.googleDriveAuthModeCustom.checked);
+        }
+
+        function getEffectiveGoogleDriveClientIdInput() {
+            return isGoogleDriveCustomAuthMode() ? getGoogleDriveClientIdInput() : '';
+        }
+
+        function applyGoogleDriveAuthModeVisibility() {
+            const customMode = isGoogleDriveCustomAuthMode();
+            if (elements.googleDriveClientIdGroup) {
+                elements.googleDriveClientIdGroup.style.display = customMode ? '' : 'none';
+            }
+            if (elements.googleDriveClientId) {
+                elements.googleDriveClientId.disabled = !customMode;
+            }
+            if (elements.googleDriveAuthModeHint) {
+                elements.googleDriveAuthModeHint.textContent = customMode
+                    ? '当前使用自定义 Google 授权配置，请确认 Client ID 填写正确。'
+                    : '当前使用内置 Google 授权配置，无需手动填写。';
+            }
+        }
+
+        function isGoogleDriveBrowserUnsupported(authStatus) {
+            const errorType = String(authStatus && authStatus.errorType || '').toLowerCase();
+            const message = String(authStatus && authStatus.message || '');
+            return errorType === 'browser_api_unsupported' ||
+                errorType === 'browser-api-unsupported' ||
+                message.includes('Microsoft Edge 暂不支持 Google Drive');
+        }
+
+        function getGoogleDriveBrowserUnsupportedMessage() {
+            return 'Microsoft Edge 暂不支持 Google Drive 完整备份。请在 Chrome 中使用，或先使用本地 JSON / 坚果云备份。';
+        }
+
         async function ensureGoogleDriveRuntimePermissionForUserGesture() {
             if (typeof chrome === 'undefined' || !chrome.permissions || typeof chrome.permissions.request !== 'function') {
                 return;
@@ -211,17 +256,31 @@
         }
 
         function applyGoogleDriveAuthState(authStatus) {
-            const clientIdReady = isGoogleDriveClientIdConfigured(getGoogleDriveClientIdInput());
-            googleDriveAuthConfigured = clientIdReady && !(authStatus && authStatus.configured === false);
+            const customMode = isGoogleDriveCustomAuthMode();
+            const advancedClientId = getEffectiveGoogleDriveClientIdInput();
+            const browserUnsupported = isGoogleDriveBrowserUnsupported(authStatus);
+            const clientIdReady = customMode
+                ? isGoogleDriveClientIdConfigured(advancedClientId)
+                : isGoogleDriveClientIdReady(advancedClientId);
+            googleDriveAuthConfigured = customMode
+                ? clientIdReady && !browserUnsupported
+                : clientIdReady && !(authStatus && authStatus.configured === false);
+            googleDriveAuthWarningMessage = '';
             const message = googleDriveAuthConfigured
-                ? '首次使用会打开 Google 登录与授权页面；授权后会把备份保存到 CodeNote Helper Backups 文件夹。'
-                : (clientIdReady
-                    ? (authStatus && authStatus.message) || '如果你刚刚修改了 OAuth Client ID 或授权范围，请重新登录并测试。'
-                    : '请先填写 Google OAuth Client ID，再保存并登录测试。');
+                ? (customMode
+                    ? '已准备好使用自定义 Google 授权配置。首次使用会打开 Google 登录页面，授权后会把备份保存到 CodeNote Helper Backups 文件夹。'
+                    : '已准备好使用内置 Google 授权配置。首次使用会打开 Google 登录页面，授权后会把备份保存到 CodeNote Helper Backups 文件夹。')
+                : (browserUnsupported
+                    ? getGoogleDriveBrowserUnsupportedMessage()
+                    : (clientIdReady
+                        ? (authStatus && authStatus.message) || '当前浏览器缺少可用的 Google Drive 授权配置，请在高级授权设置中填写自定义 Client ID。'
+                        : '请确认高级授权设置中填写的是有效的 Google OAuth Client ID。'));
+            if (!googleDriveAuthConfigured) {
+                googleDriveAuthWarningMessage = message;
+            }
             if (elements.googleDriveAuthHint) {
                 elements.googleDriveAuthHint.textContent = message;
             }
-            setDisabled(elements.googleDriveToggle, !googleDriveAuthConfigured);
             setDisabled(elements.btnTestGoogleDrive, !googleDriveAuthConfigured);
             setDisabled(elements.btnBackupGoogleDrive, !googleDriveAuthConfigured);
             setDisabled(elements.btnRestoreGoogleDrive, !googleDriveAuthConfigured);
@@ -270,7 +329,7 @@
         function applyGoogleDrivePanelVisibility() {
             if (!elements.googleDriveSettingsPanel) return;
             elements.googleDriveSettingsPanel.style.display = resolveGoogleDrivePanelVisible(
-                !googleDriveAuthConfigured || (elements.googleDriveToggle && elements.googleDriveToggle.checked)
+                elements.googleDriveToggle && elements.googleDriveToggle.checked
             )
                 ? ''
                 : 'none';
@@ -392,9 +451,15 @@
             if (elements.googleDriveClientId) {
                 elements.googleDriveClientId.value = settings.googleDrive && settings.googleDrive.clientId || '';
             }
+            if (elements.googleDriveAuthModeBuiltIn && elements.googleDriveAuthModeCustom) {
+                const hasCustomClientId = Boolean(settings.googleDrive && settings.googleDrive.clientId);
+                elements.googleDriveAuthModeBuiltIn.checked = !hasCustomClientId;
+                elements.googleDriveAuthModeCustom.checked = hasCustomClientId;
+            }
+            applyGoogleDriveAuthModeVisibility();
             applyGoogleDriveAuthState(googleDriveAuthStatus);
             if (elements.googleDriveToggle) {
-                elements.googleDriveToggle.checked = googleDriveAuthConfigured && Boolean(settings.googleDrive && settings.googleDrive.enabled);
+                elements.googleDriveToggle.checked = Boolean(settings.googleDrive && settings.googleDrive.enabled);
             }
             if (elements.googleDriveFileLabel) {
                 elements.googleDriveFileLabel.textContent = overview.googleDriveFileName || '暂无';
@@ -462,8 +527,10 @@
                 ? reviewSettingsModule.normalizeReviewFsrsSettings(reviewFsrsDraft)
                 : reviewFsrsDraft;
             const previousClientId = normalizeGoogleDriveClientId(current && current.googleDrive && current.googleDrive.clientId);
-            const nextClientId = getGoogleDriveClientIdInput();
-            const clientIdReady = isGoogleDriveClientIdConfigured(nextClientId);
+            const nextClientId = getEffectiveGoogleDriveClientIdInput();
+            const clientIdReady = isGoogleDriveCustomAuthMode()
+                ? isGoogleDriveClientIdConfigured(nextClientId)
+                : isGoogleDriveClientIdReady(nextClientId);
             const nextSettings = {
                 ...(current || {}),
                 reviewFsrs: normalizedReviewFsrs,
@@ -477,7 +544,7 @@
                 },
                 googleDrive: {
                     ...((current && current.googleDrive) || {}),
-                    enabled: clientIdReady && Boolean(elements.googleDriveToggle && elements.googleDriveToggle.checked),
+                    enabled: clientIdReady && googleDriveAuthConfigured && Boolean(elements.googleDriveToggle && elements.googleDriveToggle.checked),
                     clientId: nextClientId,
                     fileName: (current && current.googleDrive && current.googleDrive.fileName) || 'code-note-helper-full-backup.json'
                 }
@@ -516,10 +583,10 @@
 
         if (elements.googleDriveToggle) {
             elements.googleDriveToggle.addEventListener('change', () => {
-                if (!isGoogleDriveClientIdConfigured(getGoogleDriveClientIdInput())) {
+                if (elements.googleDriveToggle.checked && !googleDriveAuthConfigured) {
                     elements.googleDriveToggle.checked = false;
                     applyGoogleDrivePanelVisibility();
-                    showToast('请先填写 Google OAuth Client ID，再开启 Google Drive 备份。', 3200);
+                    showToast(googleDriveAuthWarningMessage || '当前 Google Drive 授权配置不可用，请先检查高级授权设置。', 3600);
                     return;
                 }
                 applyGoogleDrivePanelVisibility();
@@ -529,7 +596,7 @@
 
         if (elements.googleDriveClientId) {
             elements.googleDriveClientId.addEventListener('input', () => {
-                if (elements.googleDriveToggle && !isGoogleDriveClientIdConfigured(getGoogleDriveClientIdInput())) {
+                if (elements.googleDriveToggle && isGoogleDriveCustomAuthMode() && !isGoogleDriveClientIdConfigured(getGoogleDriveClientIdInput())) {
                     elements.googleDriveToggle.checked = false;
                 }
                 applyGoogleDriveAuthState({ configured: isGoogleDriveClientIdConfigured(getGoogleDriveClientIdInput()) });
@@ -537,6 +604,22 @@
                 markSyncDirty();
             });
         }
+
+        [elements.googleDriveAuthModeBuiltIn, elements.googleDriveAuthModeCustom].forEach((input) => {
+            if (!input) return;
+            input.addEventListener('change', async () => {
+                applyGoogleDriveAuthModeVisibility();
+                const googleDriveAuthStatus = typeof store.getGoogleDriveAuthStatus === 'function'
+                    ? await store.getGoogleDriveAuthStatus()
+                    : { configured: false };
+                applyGoogleDriveAuthState(googleDriveAuthStatus);
+                if (elements.googleDriveToggle && isGoogleDriveCustomAuthMode() && !isGoogleDriveClientIdConfigured(getGoogleDriveClientIdInput())) {
+                    elements.googleDriveToggle.checked = false;
+                }
+                applyGoogleDrivePanelVisibility();
+                markSyncDirty();
+            });
+        });
 
         if (elements.reviewFsrsToggle) {
             elements.reviewFsrsToggle.addEventListener('change', () => {

@@ -40,7 +40,7 @@ const Messaging = {
             data &&
             data.interactive === false &&
             (
-                error && error.errorType === 'auth-required' ||
+                String(error && error.errorType || '').toLowerCase().replace(/_/g, '-') === 'auth-required' ||
                 String(error && error.message || error || '').includes('Google Drive 需要重新登录')
             )
         );

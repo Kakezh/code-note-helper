@@ -10,6 +10,7 @@
     const constants = modules.constants || {};
     const helpers = modules.helpers || {};
     const syncCore = modules.syncCore || {};
+    const oauthConfig = modules.oauthConfig || {};
 
     const TOKEN_STORAGE_KEY = 'note_helper_google_drive_token_v1';
     const DEFAULT_FILE_NAME = constants.GOOGLE_DRIVE_DEFAULT_FILE_NAME || 'code-note-helper-full-backup.json';
@@ -35,22 +36,29 @@
         const rawErrorType = String(error && error.errorType || '').toLowerCase();
 
         if (rawErrorType === 'permission_denied' ||
-            lowerMessage.includes('user did not approve') ||
+            rawErrorType === 'user_cancelled_auth' ||
             lowerMessage.includes('access_denied')) {
             return {
                 message: '你取消了 Google Drive 授权，备份不会上传。需要备份时，请重新点击“登录并测试”或“立即备份到 Google Drive”。',
                 errorType: 'permission_denied'
             };
         }
-        if (lowerMessage.includes('redirect_uri_mismatch') ||
+        if (rawErrorType === 'redirect_uri_mismatch' ||
+            lowerMessage.includes('redirect_uri_mismatch')) {
+            return {
+                message: 'Google Drive 授权没有完成。如果授权页面显示 redirect_uri_mismatch，请核对当前扩展 ID 与 OAuth Client 配置。',
+                errorType: 'redirect_uri_mismatch'
+            };
+        }
+        if (rawErrorType === 'oauth_config_invalid' ||
             lowerMessage.includes('invalid_client') ||
             lowerMessage.includes('origin_mismatch')) {
             return {
-                message: 'Google Drive 授权配置与当前扩展不匹配。请核对 Client ID 和重定向 URI 后，再回到设置页重新登录。',
+                message: '当前扩展缺少可用的 Google Drive 授权配置，请核对当前扩展 ID 与 OAuth Client 配置，或在高级选项中填写 Client ID。',
                 errorType: 'auth_config'
             };
         }
-        if (rawErrorType === 'auth-required') {
+        if (rawErrorType === 'auth-required' || rawErrorType === 'auth_required') {
             return {
                 message: 'Google Drive 需要重新登录。请到设置页点击“登录并测试”，或手动点击“立即备份到 Google Drive”完成授权。',
                 errorType: 'auth-required'
@@ -64,10 +72,34 @@
                 errorType: 'auth-required'
             };
         }
-        if (rawErrorType === 'auth' || error && (error.status === 401 || error.status === 403)) {
+        if (rawErrorType === 'drive_api_unauthorized' || error && error.status === 401) {
             return {
                 message: 'Google Drive 授权已失效。请重新登录后再备份。',
-                errorType: 'auth'
+                errorType: 'drive_api_unauthorized'
+            };
+        }
+        if (rawErrorType === 'drive_api_forbidden' || error && error.status === 403) {
+            return {
+                message: 'Google Drive 没有足够权限完成本次操作。请重新登录后再重试。',
+                errorType: 'drive_api_forbidden'
+            };
+        }
+        if (rawErrorType === 'auth_page_load_failed') {
+            return {
+                message: 'Google 授权页面没有正常打开。请检查网络后重新点击授权。',
+                errorType: 'auth_page_load_failed'
+            };
+        }
+        if (rawErrorType === 'browser_api_unsupported') {
+            return {
+                message: 'Microsoft Edge 暂不支持 Google Drive 同步。请在 Chrome 中使用 Google Drive，或先使用本地 JSON / 坚果云备份。',
+                errorType: 'browser_api_unsupported'
+            };
+        }
+        if (rawErrorType === 'auth' || rawErrorType === 'auth_flow_failed' || lowerMessage.includes('user did not approve')) {
+            return {
+                message: 'Google Drive 授权没有完成。如果授权页面显示 redirect_uri_mismatch，请核对当前扩展 ID 与 OAuth Client 配置。',
+                errorType: rawErrorType || 'auth'
             };
         }
         return {
@@ -80,8 +112,17 @@
         const errorType = String(error && error.errorType || '').toLowerCase();
         return errorType === 'auth' ||
             errorType === 'auth-required' ||
+            errorType === 'auth_required' ||
+            errorType === 'auth_page_load_failed' ||
+            errorType === 'auth_flow_failed' ||
             errorType === 'permission_denied' ||
+            errorType === 'user_cancelled_auth' ||
             errorType === 'auth_config' ||
+            errorType === 'oauth_config_invalid' ||
+            errorType === 'redirect_uri_mismatch' ||
+            errorType === 'drive_api_unauthorized' ||
+            errorType === 'drive_api_forbidden' ||
+            errorType === 'browser_api_unsupported' ||
             error && (error.status === 401 || error.status === 403);
     }
 
@@ -127,10 +168,20 @@
         return value.endsWith('.apps.googleusercontent.com');
     }
 
+    function resolveExpectedOAuthClientId(clientId) {
+        const override = normalizeClientId(clientId);
+        if (override) return isClientIdConfigured(override) ? override : '';
+        if (oauthConfig && typeof oauthConfig.resolveClientId === 'function') {
+            const resolved = oauthConfig.resolveClientId();
+            return resolved && resolved.configured ? resolved.clientId : '';
+        }
+        return '';
+    }
+
     function createClientIdMissingError() {
-        return createGoogleDriveError('请先在设置页填写 Google OAuth Client ID。', {
+        return createGoogleDriveError('当前扩展缺少可用的 Google Drive 授权配置，请到设置页的高级选项中填写 Client ID。', {
             stage: 'auth',
-            errorType: 'auth_config'
+            errorType: 'oauth_config_invalid'
         });
     }
 
@@ -156,24 +207,25 @@
     async function getGoogleDriveAuthStatus() {
         try {
             const settings = await getGoogleDriveSettings();
-            if (!isClientIdConfigured(settings.clientId)) {
+            if (!resolveExpectedOAuthClientId(settings.clientId)) {
                 return {
                     configured: false,
-                    message: '请先填写 Google OAuth Client ID，再登录并测试。'
+                    message: '当前扩展缺少可用的 Google Drive 授权配置，请到高级设置中填写 Client ID 后再登录。'
                 };
             }
             return await sendRuntimeMessage('GET_GOOGLE_DRIVE_AUTH_STATUS');
         } catch (error) {
             return {
                 configured: false,
-                message: getErrorMessage(error, '请先填写 Google OAuth Client ID，再登录并测试。')
+                message: getErrorMessage(error, '当前扩展缺少可用的 Google Drive 授权配置。')
             };
         }
     }
 
     function isTokenUsable(tokenInfo, clientId) {
         if (!tokenInfo || !tokenInfo.accessToken) return false;
-        if (normalizeClientId(tokenInfo.clientId) !== normalizeClientId(clientId)) return false;
+        const expectedClientId = resolveExpectedOAuthClientId(clientId);
+        if (expectedClientId && normalizeClientId(tokenInfo.clientId) !== expectedClientId) return false;
         if (String(tokenInfo.scope || '') !== DRIVE_SCOPE) return false;
         const expiresAt = Number(tokenInfo.expiresAt || 0);
         return expiresAt > Date.now() + 60 * 1000;
@@ -185,6 +237,7 @@
                 interactive: interactive === true,
                 allowInteractiveFallback: options.allowInteractiveFallback === true,
                 clientId: settings.clientId,
+                refreshToken: options.refreshToken || '',
                 scope: DRIVE_SCOPE
             });
         } catch (error) {
@@ -202,7 +255,7 @@
             ...(options || {})
         };
         const settings = await getGoogleDriveSettings();
-        if (!isClientIdConfigured(settings.clientId)) {
+        if (!resolveExpectedOAuthClientId(settings.clientId)) {
             throw createClientIdMissingError();
         }
         const cached = await readCachedToken();
@@ -212,17 +265,37 @@
 
         let authResult = null;
         let silentError = null;
+        if (cached && cached.refreshToken) {
+            try {
+                authResult = await requestAccessToken(settings, false, {
+                    refreshToken: cached.refreshToken
+                });
+            } catch (error) {
+                silentError = error;
+                const errorType = String(error && error.errorType || '').toLowerCase().replace(/_/g, '-');
+                if (errorType === 'auth-required') {
+                    await writeCachedToken(null);
+                }
+            }
+        }
         try {
-            authResult = await requestAccessToken(settings, false, {
-                allowInteractiveFallback: config.allowInteractiveFallback === true
-            });
+            if (!authResult || !authResult.accessToken) {
+                authResult = await requestAccessToken(settings, false, {
+                    allowInteractiveFallback: config.allowInteractiveFallback === true
+                });
+            }
         } catch (error) {
             silentError = error;
         }
 
         if ((!authResult || !authResult.accessToken) && config.allowInteractiveFallback === true) {
-            if (silentError) {
-                throw silentError;
+            try {
+                authResult = await requestAccessToken(settings, true);
+            } catch (error) {
+                if (silentError) {
+                    throw error;
+                }
+                throw error;
             }
         } else if (!authResult || !authResult.accessToken) {
             if (silentError) {
@@ -241,13 +314,17 @@
             });
         }
 
-        await writeCachedToken({
-            accessToken: authResult.accessToken,
-            expiresAt: Number(authResult.expiresAt || 0),
-            clientId: settings.clientId,
-            scope: DRIVE_SCOPE,
-            updatedAt: new Date().toISOString()
-        });
+        if (authResult.cacheAccessToken !== false) {
+            await writeCachedToken({
+                accessToken: authResult.accessToken,
+                refreshToken: authResult.refreshToken || cached && cached.refreshToken || '',
+                expiresAt: Number(authResult.expiresAt || 0),
+                clientId: authResult.clientId || resolveExpectedOAuthClientId(settings.clientId),
+                scope: DRIVE_SCOPE,
+                authProvider: authResult.authProvider || '',
+                updatedAt: new Date().toISOString()
+            });
+        }
         return authResult.accessToken;
     }
 
@@ -279,7 +356,9 @@
             const message = response.data && response.data.error && response.data.error.message
                 ? response.data.error.message
                 : `Google Drive 返回状态 ${response.status}`;
-            const errorType = response.status === 401 || response.status === 403 ? 'auth' : 'http-status';
+            const errorType = response.status === 401
+                ? 'drive_api_unauthorized'
+                : (response.status === 403 ? 'drive_api_forbidden' : 'http-status');
             throw createGoogleDriveError(message, {
                 errorType,
                 status: response.status,
@@ -445,10 +524,8 @@
                 success: true,
                 folderName: settings.folderName,
                 folderFound: Boolean(folder),
-                folderId: folder && folder.id || '',
                 fileName: settings.fileName,
-                fileFound: Boolean(file),
-                fileId: file && file.id || ''
+                fileFound: Boolean(file)
             };
         } catch (error) {
             const stageError = createGoogleDriveError(getErrorMessage(error, 'Google Drive 授权测试失败'), {
@@ -488,9 +565,7 @@
             return {
                 success: true,
                 folderName: settings.folderName,
-                folderId: backupResult.folder.id,
                 fileName: settings.fileName,
-                fileId: backupResult.response.data && backupResult.response.data.id || backupResult.existingFile && backupResult.existingFile.id || '',
                 updated: Boolean(backupResult.existingFile && backupResult.existingFile.id)
             };
         } catch (error) {
@@ -547,8 +622,7 @@
             await syncCore.markSyncSuccess('googleDrive', 'Google Drive 恢复成功');
             return {
                 success: true,
-                fileName: settings.fileName,
-                fileId: file.id
+                fileName: settings.fileName
             };
         } catch (error) {
             const stageError = createGoogleDriveError(`恢复失败：${getErrorMessage(error, '恢复云端备份失败')}`, {
@@ -566,10 +640,10 @@
         const cached = await readCachedToken();
         await writeCachedToken(null);
         await syncCore.setSyncStatus('googleDrive', 'warning', 'Google Drive 授权已断开');
-        if (cached && cached.accessToken) {
+        if (cached && (cached.refreshToken || cached.accessToken)) {
             try {
                 await sendRuntimeMessage('GOOGLE_DRIVE_REVOKE', {
-                    accessToken: cached.accessToken
+                    accessToken: cached.refreshToken || cached.accessToken
                 });
             } catch (error) {
                 console.warn('[ProblemData] Google Drive 远端授权撤销失败，已清除本地授权：', error);

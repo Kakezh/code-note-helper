@@ -9,6 +9,7 @@
     const modules = window.NoteHelperProblemDataModules = window.NoteHelperProblemDataModules || {};
     const constants = modules.constants || {};
     const helpers = modules.helpers || {};
+    const oauthConfig = modules.oauthConfig || {};
 
     const STORAGE_KEYS = constants.STORAGE_KEYS;
     const DEFAULT_SYNC_META = constants.DEFAULT_SYNC_META;
@@ -41,6 +42,36 @@
         if (!clientId) return false;
         if (clientId.includes('REPLACE_WITH_') || clientId.includes('{0}')) return false;
         return clientId.endsWith('.apps.googleusercontent.com');
+    }
+
+    function resolveGoogleDriveOAuthClientStatus(value) {
+        const clientId = normalizeGoogleDriveClientId(value);
+        if (oauthConfig && typeof oauthConfig.resolveClientId === 'function') {
+            const resolved = oauthConfig.resolveClientId({
+                overrideClientId: clientId
+            });
+            return {
+                configured: Boolean(resolved && resolved.configured),
+                source: resolved && resolved.source || (clientId ? 'advanced' : 'missing'),
+                clientId: resolved && resolved.clientId || clientId
+            };
+        }
+        if (clientId) {
+            return {
+                configured: isGoogleDriveClientIdConfigured(clientId),
+                source: 'advanced',
+                clientId
+            };
+        }
+        return {
+            configured: false,
+            source: 'missing',
+            clientId: ''
+        };
+    }
+
+    function hasGoogleDriveOAuthClient(value) {
+        return resolveGoogleDriveOAuthClientStatus(value).configured;
     }
 
     function normalizeReviewFsrsPreset(value) {
@@ -191,7 +222,7 @@
     function isGoogleDriveConfigComplete(settings) {
         const normalized = normalizeSyncSettings(settings);
         if (!normalized.googleDrive.enabled) return true;
-        return isGoogleDriveClientIdConfigured(normalized.googleDrive.clientId);
+        return hasGoogleDriveOAuthClient(normalized.googleDrive.clientId);
     }
 
     function isAnySyncEnabled(settings) {
@@ -221,7 +252,11 @@
         const normalized = normalizeSyncSettings(settings);
         if (!normalized.googleDrive.enabled) return '';
         if (isGoogleDriveConfigComplete(normalized)) return '';
-        return 'Google Drive 已开启，但还没有填写有效的 Google OAuth Client ID，请先到设置页补全。';
+        const authStatus = resolveGoogleDriveOAuthClientStatus(normalized.googleDrive.clientId);
+        if (authStatus.source === 'advanced') {
+            return 'Google Drive 已开启，但自定义 Google OAuth Client ID 无效，请检查高级授权设置。';
+        }
+        return 'Google Drive 已开启，但当前浏览器缺少可用的 Google 授权配置。请到设置页的高级授权设置中填写自定义 Client ID，或改用已支持的 Chrome 扩展包。';
     }
 
     async function setSyncSettings(nextSettings) {
@@ -1037,6 +1072,7 @@
         writeLocalMultiple,
         isWebdavConfigComplete,
         isGoogleDriveConfigComplete,
+        resolveGoogleDriveOAuthClientStatus,
         isAnySyncEnabled,
         shouldShowSyncIndicator,
         buildWebdavConfigWarning,

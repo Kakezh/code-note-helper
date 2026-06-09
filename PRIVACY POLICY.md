@@ -1,6 +1,6 @@
 # 隐私政策
 
-最后更新：2026-06-05
+最后更新：2026-06-09
 
 ## 1. 概览
 
@@ -31,9 +31,11 @@ CodeNote Helper 默认在你的浏览器本地工作。
 
 ### B. Google Drive 备份
 
-如果你启用 Google Drive 备份或恢复，需要先在设置页填写你自己创建的 Google OAuth Client ID。扩展只会在你主动授权、主动备份或主动恢复时，把完整备份数据直接发送到你自己的 Google Drive。
+如果你启用 Google Drive 备份或恢复，正式版和当前 `dist/dev/` 构建都会使用扩展内置的 Google 授权配置打开 Google 授权流程；未知扩展 ID 才需要在高级选项中填写 Client ID。Chrome 使用浏览器内置身份授权，Microsoft Edge 使用兼容授权路径。扩展只会在你主动授权、主动备份、主动恢复或已开启自动同步且本地数据发生变化时，把完整备份数据直接发送到你自己的 Google Drive。
 
 备份文件会保存到你 Google Drive 中的可见文件夹 `CodeNote Helper Backups`，文件名为 `code-note-helper-full-backup.json`。扩展只用于创建、更新和读取自己的备份文件夹与备份文件，不用于扫描你的其他云盘文件。
+
+Edge 兼容授权路径如果成功取得 refresh token，会把它保存在本地，用于 access token 过期后的静默续期。refresh token 只保存在当前浏览器的本地扩展存储中，不会写入 Google Drive 备份 JSON、本地导出 JSON、日志、截图或开发者服务器。
 
 开发者不会收到这些数据的副本。
 
@@ -65,7 +67,7 @@ CodeNote Helper 默认在你的浏览器本地工作。
 - `storage`：保存设置、笔记、进度记录和同步状态
 - `activeTab` / `scripting`：在你使用功能时与支持站点页面交互，读取题目、代码或对话内容
 - `clipboardWrite`：在你点击复制时写入提示词或生成结果
-- `identity`：仅在你配置 Google Drive 并主动授权时打开 Google 授权流程
+- `identity`：仅在你启用 Google Drive 并主动授权时打开 Google 授权流程，或在已授权后刷新访问令牌
 - 支持站点访问：在 LeetCode、CodeFun2000、Deep-ML、TorchCode 和支持的 AI 对话页面启用扩展功能
 - 你授权的 Google API 访问：仅用于把备份文件上传到你自己的 Google Drive，或从中恢复备份
 

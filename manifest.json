@@ -40,6 +40,12 @@
   "optional_permissions": [
     "identity"
   ],
+  "oauth2": {
+    "client_id": "425918521606-6k5p5fj6nivrblrdtu0olbuek46qv5gu.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/drive.file"
+    ]
+  },
   "background": {
     "service_worker": "service-worker.js"
   },
@@ -51,6 +57,7 @@
       "js": [
         "shared/storage.js",
         "shared/problem-data/constants.js",
+        "shared/problem-data/google-drive-oauth-config.js",
         "shared/problem-data/helpers.js",
         "shared/problem-data/sync-core.js",
         "shared/problem-data/review-fsrs.js",
@@ -93,6 +100,7 @@
       "js": [
         "shared/storage.js",
         "shared/problem-data/constants.js",
+        "shared/problem-data/google-drive-oauth-config.js",
         "shared/problem-data/helpers.js",
         "shared/problem-data/sync-core.js",
         "shared/problem-data/review-fsrs.js",
@@ -135,6 +143,7 @@
       "js": [
         "shared/storage.js",
         "shared/problem-data/constants.js",
+        "shared/problem-data/google-drive-oauth-config.js",
         "shared/problem-data/helpers.js",
         "shared/problem-data/sync-core.js",
         "shared/problem-data/review-fsrs.js",
@@ -250,6 +259,7 @@
       "js": [
         "shared/storage.js",
         "shared/problem-data/constants.js",
+        "shared/problem-data/google-drive-oauth-config.js",
         "shared/problem-data/helpers.js",
         "shared/problem-data/sync-core.js",
         "shared/problem-data/review-fsrs.js",
@@ -298,6 +308,7 @@
       "js": [
         "shared/storage.js",
         "shared/problem-data/constants.js",
+        "shared/problem-data/google-drive-oauth-config.js",
         "shared/problem-data/helpers.js",
         "shared/problem-data/sync-core.js",
         "shared/problem-data/review-fsrs.js",
